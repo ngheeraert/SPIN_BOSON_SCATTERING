@@ -1,0 +1,11 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -o output.log
+#PBS -e err.log
+#PBS -u gheeraert
+#PBS -q long-serial
+#PBS -l walltime=1000:00:00
+#PBS -l nodes=1:ppn=16
+
+
+
