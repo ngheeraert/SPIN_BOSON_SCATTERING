@@ -1,4 +1,35 @@
+! ==============================================================================
+!  FILE: inverse.f90
+!
+!  PURPOSE
+!    Original research code used to produce the numerical data underlying the figures of:
+!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
+!      ultrastrong-coupling waveguide QED".
+!
+!  OVERVIEW
+!    This code implements a time-dependent variational simulation of the spin-boson
+!    model (a two-level system coupled to a continuum of bosonic modes) using a
+!    superposition of multimode coherent states (sometimes called the multi-polaron
+!    or MCS ansatz). The main workflow is:
+!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
+!      with systm:CalcDerivatives computing the variational equations of motion.
+!
+!  BUILD / DEPENDENCIES
+!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!
+! ==============================================================================
+!
 MODULE INVERSE
+!> -------------------------------------------------------------------------
+!> MODULE: INVERSE
+!> -------------------------------------------------------------------------
+!> Purpose / context:
+!>   Module `INVERSE`: central container for simulation types and routines.
+!>   This module defines the core data structures (param/state/traj) and the
+!>   variational equations of motion used during time evolution.
+!> Arguments:
+!>   (none)
+!>
   USE consts
   USE lapackmodule
   USE typedefs, only : cx => c_type, rl=> r_type
@@ -6,12 +37,41 @@ MODULE INVERSE
 
   INTERFACE printArray
     module procedure printMatrix
+    !> -------------------------------------------------------------------------
+    !> MODULE: procedure
+    !> -------------------------------------------------------------------------
+    !> Purpose / context:
+    !>   Module `procedure`: central container for simulation types and routines.
+    !>   This module defines the core data structures (param/state/traj) and the
+    !>   variational equations of motion used during time evolution.
+    !> Arguments:
+    !>   (none)
+    !>
     module procedure printVector
+    !> -------------------------------------------------------------------------
+    !> MODULE: procedure
+    !> -------------------------------------------------------------------------
+    !> Purpose / context:
+    !>   Module `procedure`: central container for simulation types and routines.
+    !>   This module defines the core data structures (param/state/traj) and the
+    !>   variational equations of motion used during time evolution.
+    !> Arguments:
+    !>   (none)
+    !>
   END INTERFACE
 
 
   CONTAINS
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: directInverse
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - A
+  !>   - sol
+  !>   - rhs
+  !>
   subroutine directInverse(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
     complex(cx),intent(in)     :: rhs(n**2)
@@ -35,6 +95,15 @@ MODULE INVERSE
     Call solveEq_c(A2D, sol)
   end subroutine directInverse
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: superInverse_f
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - A
+  !>   - sol
+  !>   - rhs
+  !>
   subroutine superInverse_f(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
     complex(cx),intent(in)     :: rhs(n**2)
@@ -128,6 +197,15 @@ MODULE INVERSE
     end if
   end subroutine
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: superInverse_h
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - A
+  !>   - sol
+  !>   - rhs
+  !>
   subroutine superInverse_h(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
     complex(cx),intent(in)     :: rhs(n**2)
@@ -220,6 +298,12 @@ MODULE INVERSE
     end if
   end subroutine
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: ZBCG2
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   (none)
+  !>
   subroutine ZBCG2 (print_resid,l,n,x,nonzero_x,rhs,m,A,toler, &
                     mxmatvec,work,precondActive,Lo,Up,Perm,&
                     info)
@@ -572,6 +656,14 @@ MODULE INVERSE
   end subroutine ZBCG2
 
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: zdot_bcg
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - zx
+  !>   - zy
+  !>
   function zdot_bcg(n,zx,zy)
 
     ! complex inner product function
@@ -585,6 +677,13 @@ MODULE INVERSE
   end function zdot_bcg
 
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: dnorm2_bcg
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - zx
+  !>
   function dnorm2_bcg(n,zx)
 
     ! l2 norm function
@@ -598,6 +697,15 @@ MODULE INVERSE
     dnorm2_bcg = sqrt( abs( zdot_bcg(n, zx, zx) ) )
   end function dnorm2_bcg
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: matvec
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - x
+  !>   - y
+  !>   - A
+  !>
   SUBROUTINE matvec(n, x, y, A)
     integer               :: n
     complex(cx)           :: x(:), y(:)
@@ -608,6 +716,15 @@ MODULE INVERSE
     RETURN
   end subroutine
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: blockMatvec
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - x
+  !>   - y
+  !>   - Alpha
+  !>
   subroutine blockMatvec(n, x, y, Alpha)
     integer                  :: n
     integer                  :: i,j
@@ -638,6 +755,17 @@ MODULE INVERSE
   end subroutine blockMatvec
 
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: precond
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>   - y
+  !>   - active
+  !>   - Lo
+  !>   - Up
+  !>   - Perm
+  !>
   SUBROUTINE precond (n,y,active,Lo,Up,Perm)
     integer                  :: n
     complex(cx)              :: y(n)
@@ -660,6 +788,20 @@ MODULE INVERSE
 
   !-- sorting routines
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: Merge
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>   - NA
+  !>   - B
+  !>   - NB
+  !>   - C
+  !>   - NC
+  !>   - indx
+  !>   - indxT
+  !>   - indxC
+  !>
   subroutine Merge(A,NA,B,NB,C,NC,indx,indxT,indxC)
 
    integer, intent(in) :: NA,NB,NC         ! Normal usage: NA+NB = NC
@@ -731,6 +873,14 @@ MODULE INVERSE
    return
  end subroutine MergeSort
 
+ !> -------------------------------------------------------------------------
+ !> SUBROUTINE: Sort
+ !> -------------------------------------------------------------------------
+ !> Arguments:
+ !>   - n
+ !>   - A
+ !>   - indx
+ !>
  subroutine Sort(n,A,indx)
    integer, intent (in)        :: n
    integer, intent(in out)     :: A(n)
@@ -746,6 +896,13 @@ MODULE INVERSE
 
   ! -- math routines
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: kroneckerDelta
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - a
+  !>   - b
+  !>
   FUNCTION kroneckerDelta(a,b)
 
  		integer,intent(in)   ::  a,b
@@ -760,6 +917,12 @@ MODULE INVERSE
 
   ! -- printing matrices routines
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: printMatrix
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>
   SUBROUTINE printMatrix(A)
 
     complex(cx)                      :: A(:,:)
@@ -781,6 +944,12 @@ MODULE INVERSE
     print*, '______'
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: printVector
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>
   SUBROUTINE printVector(A)
     complex(cx)                      :: A(:)
     integer                          :: i,j

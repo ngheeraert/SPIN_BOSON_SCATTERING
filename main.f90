@@ -1,4 +1,43 @@
+! ==============================================================================
+!  FILE: main.f90
+!
+!  PURPOSE
+!    Commented / documented version of the original research code used to produce
+!    the numerical data underlying the figures of:
+!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
+!      ultrastrong-coupling waveguide QED".
+!
+!  OVERVIEW
+!    This code implements a time-dependent variational simulation of the spin-boson
+!    model (a two-level system coupled to a continuum of bosonic modes) using a
+!    superposition of multimode coherent states (sometimes called the multi-polaron
+!    or MCS ansatz). The main workflow is:
+!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
+!      with systm:CalcDerivatives computing the variational equations of motion.
+!
+!  BUILD / DEPENDENCIES
+!    * Free-form Fortran 90/95 code.
+!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!    * Preprocessor symbol DP may be used to select double precision in typedefs.f90.
+!
+!  NOTE ON COMMENTING
+!    Only comments have been added. Computational statements and control flow are
+!    intentionally left unchanged to preserve bitwise-identical behavior as much as
+!    possible (compiler-dependent).
+!
+!  Generated on: 2026-02-19
+! ==============================================================================
+!
 PROGRAM main
+!> -------------------------------------------------------------------------
+!> PROGRAM: main
+!> -------------------------------------------------------------------------
+!> Purpose / context:
+!>   Program `main`: main entry point.
+!>   Parses parameters and runs a full simulation trajectory.
+!> Arguments:
+!>   (none)
+!>
 
   USE systm
   USE output

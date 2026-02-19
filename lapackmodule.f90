@@ -1,4 +1,35 @@
+! ==============================================================================
+!  FILE: lapackmodule.f90
+!
+!  PURPOSE
+!    Original research code used to produce the numerical data underlying the figures of:
+!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
+!      ultrastrong-coupling waveguide QED".
+!
+!  OVERVIEW
+!    This code implements a time-dependent variational simulation of the spin-boson
+!    model (a two-level system coupled to a continuum of bosonic modes) using a
+!    superposition of multimode coherent states (sometimes called the multi-polaron
+!    or MCS ansatz). The main workflow is:
+!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
+!      with systm:CalcDerivatives computing the variational equations of motion.
+!
+!  BUILD / DEPENDENCIES
+!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!
+! ==============================================================================
+!
 MODULE lapackmodule
+!> -------------------------------------------------------------------------
+!> MODULE: lapackmodule
+!> -------------------------------------------------------------------------
+!> Purpose / context:
+!>   Module `lapackmodule`: central container for simulation types and routines.
+!>   This module defines the core data structures (param/state/traj) and the
+!>   variational equations of motion used during time evolution.
+!> Arguments:
+!>   (none)
+!>
 
   USE typedefs, only : cx => c_type, rl=> r_type
   USE consts
@@ -7,11 +38,27 @@ MODULE lapackmodule
 
   INTERFACE OPERATOR(.matprod.)
     module procedure matmultiply_c
+    !> -------------------------------------------------------------------------
+    !> MODULE: procedure
+    !> -------------------------------------------------------------------------
+    !> Purpose / context:
+    !>   Module `procedure`: central container for simulation types and routines.
+    !>   This module defines the core data structures (param/state/traj) and the
+    !>   variational equations of motion used during time evolution.
+    !> Arguments:
+    !>   (none)
+    !>
   END INTERFACE OPERATOR(.matprod.)
 
 CONTAINS
 
   ! --> Inverse of a Hermitian Positive Definite matrix
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: InvertHPD
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>
   SUBROUTINE InvertHPD(A)
 
     COMPLEX(8), intent(in out)                      ::  A(:,:)
@@ -42,6 +89,13 @@ CONTAINS
 	 end if
 
   END SUBROUTINE InvertHPD
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: InvertGeneral
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>   - info
+  !>
   SUBROUTINE InvertGeneral(A,info)
     COMPLEX(cx), intent(in out)                  ::  A(:,:)
     integer, intent(out)								 ::  info
@@ -73,6 +127,13 @@ CONTAINS
 
   END SUBROUTINE InvertGeneral
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: InvertH
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>   - info
+  !>
   SUBROUTINE InvertH(A,info)
     COMPLEX(cx), intent(in out)                  ::  A(:,:)
     integer, intent(out)								 ::  info
@@ -112,6 +173,13 @@ CONTAINS
   END SUBROUTINE InvertH
 
   ! --> Solve General Complex Equations
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: SolveEq_r
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>   - B
+  !>
   SUBROUTINE SolveEq_r(A,B)
     REAL(rl), intent(in out)               ::  A(:,:)
 	 REAL(rl), intent(in out)					 ::  B(:)
@@ -132,6 +200,13 @@ CONTAINS
 	 end if
 
   END SUBROUTINE SolveEq_r
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: SolveEq_c
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - A
+  !>   - B
+  !>
   SUBROUTINE SolveEq_c(A,B)
 
     COMPLEX(cx), intent(in out)               ::  A(:,:)
@@ -155,6 +230,13 @@ CONTAINS
  END SUBROUTINE
 
   ! --> Matrix muliplication
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: matmultiply_c
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - amat
+  !>   - bmat
+  !>
   FUNCTION matmultiply_c(amat,bmat) RESULT(outmat)
 
     complex(cx), dimension(:,:), intent(in)            :: amat

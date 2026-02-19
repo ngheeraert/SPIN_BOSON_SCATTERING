@@ -1,4 +1,35 @@
+! ==============================================================================
+!  FILE: systm.f90
+!
+!  PURPOSE
+!    Original research code used to produce the numerical data underlying the figures of:
+!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
+!      ultrastrong-coupling waveguide QED".
+!
+!  OVERVIEW
+!    This code implements a time-dependent variational simulation of the spin-boson
+!    model (a two-level system coupled to a continuum of bosonic modes) using a
+!    superposition of multimode coherent states (sometimes called the multi-polaron
+!    or MCS ansatz). The main workflow is:
+!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
+!      with systm:CalcDerivatives computing the variational equations of motion.
+!
+!  BUILD / DEPENDENCIES
+!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+
+! ==============================================================================
+!
 MODULE SYSTM 
+!> -------------------------------------------------------------------------
+!> MODULE: SYSTM
+!> -------------------------------------------------------------------------
+!> Purpose / context:
+!>   Module `SYSTM`: central container for simulation types and routines.
+!>   This module defines the core data structures (param/state/traj) and the
+!>   variational equations of motion used during time evolution.
+!> Arguments:
+!>   (none)
+!>
 
   USE consts
   USE lapackmodule
@@ -72,6 +103,16 @@ MODULE SYSTM
 CONTAINS
 
   !== initialize the parameters and get those in the command line
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: getParameters
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Parse command-line flags and populate the `param` structure (`sys`).
+  !>   Parameters map to the spin-boson model (Δ, α, cutoff) and to the incident
+  !>   wavepacket / drive (k0, sigma, x0, n_wp) used for scattering simulations.
+  !> Arguments:
+  !>   - sys
+  !>
   SUBROUTINE getParameters(sys)
 
 	 type(param)           			  ::  sys
@@ -273,6 +314,17 @@ CONTAINS
   END SUBROUTINE  
 
   !== Initialisation routines
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: allocate_state
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Allocate all arrays inside a `state` based on the number of coherent
+  !>   components (`np`) and number of modes (`nmode`).
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - npvalue
+  !>
   SUBROUTINE allocate_state(sys,st,npvalue)
 
 	 type(param), intent(in)      	::  sys
@@ -330,6 +382,13 @@ CONTAINS
 	 st = tmpst
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: allocate_trajectory
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - tr
+  !>
   SUBROUTINE allocate_trajectory(sys,tr)
 
 	 type(param), intent(in)      	::  sys
@@ -365,6 +424,17 @@ CONTAINS
 	 print*, "-- TRAJECTORY ALLOCATED"
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_gs
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - time_in
+  !>
   SUBROUTINE initialise_gs(sys,st,time_in)
 
 	 type(param), intent(in)      	::  sys
@@ -413,6 +483,22 @@ CONTAINS
 	 CALL normalise(st)
 
   END SUBROUTINE 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_cs_gs
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k0
+  !>   - x0
+  !>   - sigma
+  !>   - nb
+  !>   - ini_cloud_st
+  !>   - t_in
+  !>
   SUBROUTINE initialise_cs_gs(sys,st, k0, x0, sigma, nb, ini_cloud_st, t_in)
 
 	 type(param), intent(in)   						::  sys
@@ -522,6 +608,21 @@ CONTAINS
 	 print*, "=="
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_photon_gs
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k0
+  !>   - x0
+  !>   - sigma
+  !>   - nb
+  !>   - ini_cloud_st
+  !>
   SUBROUTINE initialise_photon_gs(sys,st, k0, x0, sigma, nb, ini_cloud_st)
 
 	 type(param), intent(in)   						::  sys
@@ -627,6 +728,23 @@ CONTAINS
 	 CALL normalise(st)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_cs_2freqs_gs
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k0_1
+  !>   - k0_2
+  !>   - x0
+  !>   - sigma
+  !>   - nb
+  !>   - ini_cloud_st
+  !>   - t_in
+  !>
   SUBROUTINE initialise_cs_2freqs_gs(sys,st, k0_1, k0_2, x0, sigma, nb, ini_cloud_st, t_in)
 
 	 type(param), intent(in)   						::  sys
@@ -731,6 +849,21 @@ CONTAINS
 	 print*, "=="
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_photon
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k0
+  !>   - x0
+  !>   - sigma
+  !>   - nb
+  !>   - ini_cloud_st
+  !>
   SUBROUTINE initialise_photon(sys,st, k0, x0, sigma, nb, ini_cloud_st)
 
 	 type(param), intent(in)   						::  sys
@@ -779,6 +912,16 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_from_file_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE initialise_from_file_eo(sys,st)
 
     type(param), intent(in)			  	::  sys
@@ -852,6 +995,16 @@ CONTAINS
 	 close(101)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: initialise_from_files_eo_2
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
+  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE initialise_from_files_eo_2(sys,st) 
     type(param), intent(in out)			::  sys
 	 type(state), intent(in out)	  		::  st
@@ -985,6 +1138,16 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: zke_f
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - sigma
+  !>   - k0
+  !>   - x0
+  !>   - nb
+  !>
   FUNCTION zke_f(sys, sigma, k0 , x0, nb) result(zkout)
 
 	 !--  this function calculates: zk^e = z_k + z_-k
@@ -1010,6 +1173,16 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: zko_f
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - sigma
+  !>   - k0
+  !>   - x0
+  !>   - nb
+  !>
   FUNCTION zko_f(sys, sigma, k0 , x0, nb) result(zkout)
 
 	 !--  this function calculates: zk^e = z_k + z_-k
@@ -1036,6 +1209,12 @@ CONTAINS
 
   END FUNCTION
 
+	 !> -------------------------------------------------------------------------
+	 !> FUNCTION: parameterchar
+	 !> -------------------------------------------------------------------------
+	 !> Arguments:
+	 !>   - sys
+	 !>
 	 FUNCTION parameterchar(sys)
 
 		type(param), intent(in)		::   sys
@@ -1096,6 +1275,15 @@ CONTAINS
 					 "_p"//trim(adjustl(prepchar))
 
 	 END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_param
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>
   SUBROUTINE print_param(sys)
   
 	 type(param), intent(in)	::  sys
@@ -1126,6 +1314,14 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: gs_filename
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - path_in
+  !>
   FUNCTION gs_filename(sys,st,path_in)
 
 	 type(param), intent(in)   		::  sys
@@ -1158,7 +1354,18 @@ CONTAINS
   !== Calculation of the derivatives
   !======================================
 
-	 !-- Calculate the state derivatives form the st variables with KRYLOV
+ !> -------------------------------------------------------------------------
+ !> SUBROUTINE: CalcDerivatives
+ !> -------------------------------------------------------------------------
+ !> Purpose / context:
+ !>   Compute time-derivatives for the variational parameters of the multimode
+ !>   coherent-state superposition (MCS / multi-polaron ansatz).
+ !>   Builds overlap matrices and solves linear systems for (fdot,hdot,pdot,qdot).
+ !> Arguments:
+ !>   - sys
+ !>   - st
+ !>   - superInverseFlag
+ !>
  SUBROUTINE CalcDerivatives(sys,st,superInverseFlag)
 
   	type(param), intent(in)                         :: sys
@@ -1306,6 +1513,14 @@ CONTAINS
  END SUBROUTINE
 
 	 !-- Derivatives of E with respect to sepcified variable STARRED
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: P_j
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - m
+  !>
   FUNCTION P_j(sys,st,m)
 
 	 type(param),intent(in)         ::  sys
@@ -1323,6 +1538,14 @@ CONTAINS
 	 P_j = -Ic*P_j
   
   END FUNCTION 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: Q_j
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - m
+  !>
   FUNCTION Q_j(sys,st,m)
 
 	 type(param),intent(in)  		   ::  sys
@@ -1340,6 +1563,14 @@ CONTAINS
 	 Q_j = -Ic*Q_j
 
   END FUNCTION 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: F_j
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - j
+  !>
   FUNCTION F_j(sys,st,j)
 
 	 type(param),intent(in)  		   			 ::  sys
@@ -1358,6 +1589,14 @@ CONTAINS
 	 F_j(:) = - Ic*F_j(:) 
 
 	 END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: H_j
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - j
+  !>
   FUNCTION H_j(sys,st,j)
 
 	 type(param),intent(in)  		   			 ::  sys
@@ -1377,6 +1616,13 @@ CONTAINS
 
 	 END FUNCTION
 	 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: update_sums
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE update_sums(sys,st)
 	 
 	 type(param),intent(in)			::  sys
@@ -1412,6 +1658,15 @@ CONTAINS
   !== State functions
   !======================================
   
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: Energy
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION Energy(sys,st)
 	 type(param),intent(in)         				::  sys
 	 type(state),intent(in)         				::  st
@@ -1440,6 +1695,14 @@ CONTAINS
 	 energy = real(tmp)
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: norm
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION norm(st)
 
 	 real(rl) 			       		::  norm
@@ -1463,6 +1726,14 @@ CONTAINS
 	 norm = sqrt(  real(tmp) )
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: normalise
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - st
+  !>
   SUBROUTINE normalise(st)
 
 	 type(state), intent(in out)  ::  st
@@ -1474,6 +1745,15 @@ CONTAINS
 	 st%q = st%q/normval
 
   END SUBROUTINE
+ !> -------------------------------------------------------------------------
+ !> FUNCTION: error
+ !> -------------------------------------------------------------------------
+ !> Arguments:
+ !>   - sys
+ !>   - oost
+ !>   - ost
+ !>   - st
+ !>
  FUNCTION error(sys,oost,ost,st)
 	 
 	 type(param),intent(in)		::  sys
@@ -1584,6 +1864,15 @@ CONTAINS
   END FUNCTION	
 
   !-- Calculate the overlap between two coherent states
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: ov_states
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - st1
+  !>   - st2
+  !>
   FUNCTION ov_states(st1,st2)
 
 	 type(state), intent(in)  ::  st1,st2
@@ -1603,6 +1892,15 @@ CONTAINS
 	 ov_states = tmp
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: ov_scalar
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - f1
+  !>   - f2
+  !>
   FUNCTION ov_scalar(f1,f2)
 
         complex(cx), intent(in) :: f1, f2
@@ -1616,6 +1914,15 @@ CONTAINS
         ov_scalar = exp( -0.5_rl*tmp1 - 0.5_rl*tmp2 + tmp3 ) 
 
   END FUNCTION	ov_scalar
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: ov
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - f1
+  !>   - f2
+  !>
   FUNCTION ov(f1,f2)
 
         complex(cx), intent(in) :: f1( : ), f2( : )
@@ -1643,6 +1950,14 @@ CONTAINS
   END FUNCTION	ov
 
   !-- Probability of being in the up or down state
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: upProb
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION upProb(st)
 
 	 real(rl) 			       		::  upProb
@@ -1659,6 +1974,14 @@ CONTAINS
 	 upprob=real(tmp)
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: downProb
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION downProb(st)
 
 	 real(rl) 			       		::  downProb
@@ -1677,6 +2000,12 @@ CONTAINS
   END FUNCTION
 
   !-- Expectation value of sigmaX
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: sigmaX
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION sigmaX(st)
   
 	 type(state), intent(in)  :: st
@@ -1696,6 +2025,12 @@ CONTAINS
 	 sigmaX = real(tmp)
   
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: sigmaZ
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION sigmaZ(st)
   
 	 type(state), intent(in)  :: st
@@ -1704,6 +2039,14 @@ CONTAINS
 	 sigmaZ = upProb(st) - downProb(st)
   
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: d_sigmaZ
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - ost
+  !>   - st
+  !>   - dt
+  !>
   FUNCTION d_sigmaZ(ost,st,dt)
   
 	 type(state), intent(in)  :: ost, st
@@ -1713,6 +2056,12 @@ CONTAINS
 	 d_sigmaZ = ( sigmaZ(st) - sigmaZ(ost) ) / dt
   
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: sigmaY
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION sigmaY(st)
   
 	 type(state), intent(in)  :: st
@@ -1733,6 +2082,15 @@ CONTAINS
   END FUNCTION
 
   !-- Fourrier routine EO
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: FT_X_to_k_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - fnx
+  !>   - sign_k
+  !>   - xmin
+  !>
   FUNCTION FT_X_to_k_EO(sys,fnx,sign_k,xmin)
 
 	 type(param),intent(in)   													::  sys
@@ -1776,6 +2134,13 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: f_nx_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION f_nx_EO(sys,st)
 
 	 type(param),intent(in)   	::  sys
@@ -1794,6 +2159,13 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: h_nx_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION h_nx_EO(sys,st)
 
 
@@ -1815,6 +2187,13 @@ CONTAINS
 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: n_up_k_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION n_up_k_EO(sys,st)
 
 	 type(state), intent(in)   						::  st
@@ -1847,6 +2226,13 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: n_down_k_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION n_down_k_EO(sys,st)
 
 	 type(state), intent(in)   									 ::  st
@@ -1880,6 +2266,13 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: n_k_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION n_k_EO(sys,st)
 
 	 type(state), intent(in)   										::  st
@@ -1912,6 +2305,13 @@ CONTAINS
 	 end do
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: n_x_EO
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION n_x_EO(sys,st)
 
 	 type(state), intent(in)   										::  st
@@ -1941,6 +2341,12 @@ CONTAINS
   END FUNCTION
 
   !-- total number of photons
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: n_up_eo
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - st
+  !>
   FUNCTION n_up_eo(st)
 
 	 type(state),intent(in)			::  st
@@ -1972,6 +2378,13 @@ CONTAINS
   !== PHOTON DECOMPOSITION FUNCITONS
   !======================================================
   
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: one_photon_k_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION one_photon_k_amp_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2001,6 +2414,13 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: one_photon_k_amp_down
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION one_photon_k_amp_down(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2030,6 +2450,13 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: one_photon_x_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION one_photon_x_amp_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2056,6 +2483,13 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: one_photon_x_amp_down
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION one_photon_x_amp_down(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2083,6 +2517,13 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: two_photon_kk_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION two_photon_kk_amp_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2120,6 +2561,13 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: two_photon_kk_amp_down
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION two_photon_kk_amp_down(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2156,6 +2604,13 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: two_photon_xx_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION two_photon_xx_amp_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2189,6 +2644,13 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: two_photon_xx_amp_p
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION two_photon_xx_amp_p(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2220,6 +2682,13 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: two_photon_xx_amp_q
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION two_photon_xx_amp_q(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2252,6 +2721,14 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: three_photon_kk_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k_in
+  !>
   FUNCTION three_photon_kk_amp_up(sys,st,k_in)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2288,6 +2765,14 @@ CONTAINS
 	 end do 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: three_photon_xx_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - i_in
+  !>
   FUNCTION three_photon_xx_amp_up(sys,st,i_in)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2321,6 +2806,13 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: three_photon_xxx_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION three_photon_xxx_amp_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2358,6 +2850,13 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: three_photon_xxx_amp_p
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION three_photon_xxx_amp_p(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2393,6 +2892,15 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: sub_three_photon_xxx_amp_p
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ar1
+  !>   - ar2
+  !>
   SUBROUTINE sub_three_photon_xxx_amp_p(sys,st,ar1,ar2)
 
 	 type(param), intent(in)    	 		::  sys
@@ -2433,6 +2941,15 @@ CONTAINS
 
 	 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: sub_three_photon_xxx_amp_q
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ar1
+  !>   - ar2
+  !>
   SUBROUTINE sub_three_photon_xxx_amp_q(sys,st,ar1,ar2)
 
 	 type(param), intent(in)    	 		::  sys
@@ -2470,6 +2987,13 @@ CONTAINS
 	 
   END SUBROUTINE
 !
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: three_photon_xxx_amp_q
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION three_photon_xxx_amp_q(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2508,6 +3032,15 @@ CONTAINS
 	 
   END FUNCTION
   
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: four_photon_kk_amp_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k_in_1
+  !>   - k_in_2
+  !>
   FUNCTION four_photon_kk_amp_up(sys,st,k_in_1,k_in_2)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2545,6 +3078,13 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_2_photon
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_2_photon(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2601,6 +3141,13 @@ CONTAINS
 	 nk_2_photon = 4 * nk_2_photon/sys%dk1
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_3_photon
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_3_photon(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2679,6 +3226,13 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_2_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_2_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2727,6 +3281,13 @@ CONTAINS
 	 nk_2_photon_up = 4 * nk_2_photon_up/sys%dk1
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_2_photon_up_RR_LL
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_2_photon_up_RR_LL(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2777,6 +3338,13 @@ CONTAINS
 	 nk_2_photon_up_RR_LL = 4 * nk_2_photon_up_RR_LL/sys%dk1
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_2_photon_up_RL_RL
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_2_photon_up_RL_RL(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2827,6 +3395,13 @@ CONTAINS
 	 nk_2_photon_up_RL_RL = 4 * nk_2_photon_up_RL_RL/sys%dk1
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nx_2_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nx_2_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2872,6 +3447,13 @@ CONTAINS
 	 nx_2_photon_up = 4 * nx_2_photon_up/sys%dx
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nxx_2_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nxx_2_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2910,6 +3492,13 @@ CONTAINS
 	 nxx_2_photon_up = 4 * nxx_2_photon_up/sys%dx
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_3_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_3_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -2977,6 +3566,13 @@ CONTAINS
 	 nk_3_photon_up = 18*nk_3_photon_up/sys%dk1
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nx_3_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nx_3_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -3041,6 +3637,13 @@ CONTAINS
 	 nx_3_photon_up = 18*nx_3_photon_up/sys%dx
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_4_photon_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION nk_4_photon_up(sys,st)
 
 	 type(param), intent(in)    	 ::  sys
@@ -3123,6 +3726,15 @@ CONTAINS
 	 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_4_photon_up_k1_k2
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - k_in_1
+  !>   - k_in_2
+  !>
   FUNCTION nk_4_photon_up_k1_k2(sys,st,k_in_1,k_in_2) 
   	  
 	 type(param), intent(in)    	 ::  sys
@@ -3186,6 +3798,14 @@ CONTAINS
 
 	 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: nk_5_photon_at_k_up
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - n_k_in
+  !>
   FUNCTION nk_5_photon_at_k_up(sys,st,n_k_in)
 
 	 type(param), intent(in)    	 ::  sys
@@ -3273,6 +3893,12 @@ CONTAINS
   !== MATH FUNCTIONS
   !======================================================
 
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: factorial
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - n
+  !>
   FUNCTION factorial(n)
 
 	 integer, intent(in)		::  n

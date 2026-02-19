@@ -1,4 +1,35 @@
+! ==============================================================================
+!  FILE: output.f90
+!
+!  PURPOSE
+!   Research code used to produce the numerical data underlying the figures of:
+!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
+!      ultrastrong-coupling waveguide QED".
+!
+!  OVERVIEW
+!    This code implements a time-dependent variational simulation of the spin-boson
+!    model (a two-level system coupled to a continuum of bosonic modes) using a
+!    superposition of multimode coherent states (sometimes called the multi-polaron
+!    or MCS ansatz). The main workflow is:
+!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
+!      with systm:CalcDerivatives computing the variational equations of motion.
+!
+!  BUILD / DEPENDENCIES
+!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!
+! ==============================================================================
+!
 MODULE output
+!> -------------------------------------------------------------------------
+!> MODULE: output
+!> -------------------------------------------------------------------------
+!> Purpose / context:
+!>   Module `output`: central container for simulation types and routines.
+!>   This module defines the core data structures (param/state/traj) and the
+!>   variational equations of motion used during time evolution.
+!> Arguments:
+!>   (none)
+!>
 
   USE systm
   USE consts
@@ -11,6 +42,17 @@ CONTAINS
   !== MAIN ROUTINE
   !=========================================================
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: printTrajectory_DL
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   High-level driver: allocate arrays, construct initial state, evolve to sys%tmax,
+  !>   then write observables to disk (spectra, reflection/transmission, correlations).
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - st_0
+  !>
   SUBROUTINE printTrajectory_DL(sys,st,st_0) 
 
     type(param), intent(in out)			::  sys
@@ -146,6 +188,20 @@ CONTAINS
 
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: evolveState_DL
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Inner time evolution loop with adaptive diagnostics. May stop early to trigger
+  !>   basis enlargement (adding coherent components) when monitored error increases.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - tr
+  !>   - tmax
+  !>   - add
+  !>   - st_ba
+  !>
   SUBROUTINE evolveState_DL(sys,st,tr,tmax, add, st_ba) 
 
     type(param), intent(in)				::  sys
@@ -327,6 +383,19 @@ CONTAINS
 
   END SUBROUTINE
 
+	 !> -------------------------------------------------------------------------
+	 !> SUBROUTINE: checkTimestep
+	 !> -------------------------------------------------------------------------
+	 !> Arguments:
+	 !>   - sys
+	 !>   - st
+	 !>   - ost
+	 !>   - oost
+	 !>   - slowfactor
+	 !>   - errorlimit
+	 !>   - tini
+	 !>   - st_ba
+	 !>
 	 SUBROUTINE checkTimestep(sys,st,ost,oost,slowfactor,errorlimit,tini,st_ba)
 
 	   type(param), intent(in)			:: sys
@@ -443,6 +512,17 @@ CONTAINS
 
 
 	 END SUBROUTINE
+	 !> -------------------------------------------------------------------------
+	 !> SUBROUTINE: checkTimestep_t3
+	 !> -------------------------------------------------------------------------
+	 !> Arguments:
+	 !>   - sys
+	 !>   - st
+	 !>   - ost
+	 !>   - oost
+	 !>   - st_t3
+	 !>   - errorlimit
+	 !>
 	 SUBROUTINE checkTimestep_t3(sys,st,ost,oost,st_t3,errorlimit)
 
 	   type(param), intent(in)			:: sys
@@ -518,6 +598,16 @@ CONTAINS
 
 
 	 END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_evolution_data
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - tr
+  !>
   SUBROUTINE print_evolution_data(sys,tr)
 
 		type(param), intent(in)  		::  sys
@@ -569,6 +659,19 @@ CONTAINS
 
   !-- Evolution routine --  NOTE: to minimize the number of calculations certain sums are stored in state,
   !		 therefore after every timestep, these variables are updated with	update_sums.
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: Evolve_RK4
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Perform one Runge–Kutta 4 step by repeated calls to systm:CalcDerivatives.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ost
+  !>   - oost
+  !>   - slowfactor
+  !>   - superinverseflag
+  !>
   SUBROUTINE Evolve_RK4(sys,st,ost,oost,slowfactor,superinverseflag)
 
 	 type(state),intent(in out)   ::  st, ost, oost
@@ -650,6 +753,16 @@ CONTAINS
   END SUBROUTINE evolve_RK4
 
   !-- routine to add polarons
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: add_coherent_state
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Increase the variational basis size by appending one additional coherent state.
+  !>   This implements the adaptive-basis strategy described in the paper appendices.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE add_coherent_state(sys,st)
 
 		type(param), intent(in)			:: sys
@@ -701,6 +814,13 @@ CONTAINS
 		print*," "
 
 	 END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: remove_coherent_state
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE remove_coherent_state(sys,st)
 
 		type(param), intent(in)			:: sys
@@ -773,6 +893,18 @@ CONTAINS
 		!end if
 
 	 END SUBROUTINE
+	 !> -------------------------------------------------------------------------
+	 !> SUBROUTINE: find_biggest_Mnp
+	 !> -------------------------------------------------------------------------
+	 !> Arguments:
+	 !>   - st
+	 !>   - Mnp_f
+	 !>   - n_f
+	 !>   - p_f
+	 !>   - Mnp_h
+	 !>   - n_h
+	 !>   - p_h
+	 !>
 	 SUBROUTINE find_biggest_Mnp(st,Mnp_f,n_f,p_f,Mnp_h,n_h,p_h)
 
 		type(state), intent(in)    ::  st
@@ -801,6 +933,14 @@ CONTAINS
 	 END SUBROUTINE
 
   !-- Wave-packet filtering rountines
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: filtered_wp_eo
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - xmin_in
+  !>
   FUNCTION filtered_wp_eo(sys,st,xmin_in) 
 
     type(param), intent(in)			  	::  sys
@@ -835,6 +975,13 @@ CONTAINS
 
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: left_going_st_eo
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   FUNCTION left_going_st_eo(sys,st) 
 
     type(param), intent(in)			  	::  sys
@@ -859,6 +1006,13 @@ CONTAINS
 
   END FUNCTION
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: remove_gs_fromfile
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE remove_gs_fromfile(sys,st)
 
 	 type(param),intent(in)								 ::  sys
@@ -897,6 +1051,15 @@ CONTAINS
 	 st%h = st%h - gs_h
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: remove_gs
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - gst
+  !>   - out_st
+  !>
   SUBROUTINE remove_gs(sys,st,gst,out_st)
 
 	 type(param),intent(in)								 ::  sys
@@ -915,6 +1078,14 @@ CONTAINS
 
 	 !== Transmission/reflections funtions DOUBLE LINE
 	 !-- transmitted energy
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: transmission
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ini_st
+  !>
   FUNCTION transmission(sys,st,ini_st)
 
 	 type(param),intent(in) 					 		::  sys
@@ -937,6 +1108,14 @@ CONTAINS
 	 transmission = t_output/input
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: reflection
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ini_st
+  !>
   FUNCTION reflection(sys,st,ini_st)
 
 	 type(param),intent(in) 					 			::  sys
@@ -967,6 +1146,17 @@ CONTAINS
   END FUNCTION
 
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_1ph_losses
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - ini_st
+  !>
   SUBROUTINE print_1ph_losses(sys,st,ini_st)
 
 	 type(param),intent(in) 					 			::  sys
@@ -1011,6 +1201,17 @@ CONTAINS
   !=========================================================
 
   !== printing the state vector
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_fks
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_fks(sys,st,label)
 
 	 type(param), intent(in)											::  sys
@@ -1048,6 +1249,17 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_ps
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_ps(sys, st, label)
 
 	 type(param), intent(in)			::  sys
@@ -1071,6 +1283,17 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_fxs
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_fxs(sys,st,label)
 
 	 type(param), intent(in)		 ::  sys
@@ -1109,6 +1332,17 @@ CONTAINS
   END SUBROUTINE
 
   !== printing MEAN PHOTON NUMBERS
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_nk_EO
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_nk_EO(sys,st,label) 
 
 	 type(param), intent(in)							  ::  sys
@@ -1146,6 +1380,17 @@ CONTAINS
 	 close(105)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_nk_EO_k0
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_nk_EO_k0(sys,st,label) 
 
 	 type(param), intent(in)							  ::  sys
@@ -1216,6 +1461,18 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_nx_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - makefilename
+  !>
   SUBROUTINE print_nx_eo(sys,st,label,makefilename) 
 
     type(param), intent(in)		 ::  sys
@@ -1259,6 +1516,18 @@ CONTAINS
   END SUBROUTINE
 
   !== printing the g2 functions
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_g2
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - x1
+  !>   - x2
+  !>   - st
+  !>
   SUBROUTINE print_g2(sys,x1,x2,st)
 
 	 type(param), intent(in)      		::  sys
@@ -1321,6 +1590,17 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_g2_0
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_g2_0(sys,st, label)
 
 	 type(param), intent(in)      		::  sys
@@ -1367,6 +1647,17 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_g2_0fh
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st_in
+  !>   - label
+  !>
   SUBROUTINE print_g2_0fh(sys,st_in, label)
 
 	 type(param), intent(in)      		::  sys
@@ -1415,6 +1706,17 @@ CONTAINS
   END SUBROUTINE
 
   !== print photon decompositions TO UPDATE FOR UP AND DOWN
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_2ph_prob_kk_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_2ph_prob_kk_eo(sys,st,label)
 
 	 type(param), intent(in)      		::  sys
@@ -1447,6 +1749,17 @@ CONTAINS
 	 end do
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_2ph_prob_kk_eo_PY
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_2ph_prob_kk_eo_PY(sys,st,label)
 
 	 type(param), intent(in)      		::  sys
@@ -1489,6 +1802,17 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_2ph_prob_xx_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_2ph_prob_xx_eo(sys,st,label)
 
 	 type(param), intent(in)      		::  sys
@@ -1522,6 +1846,17 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_2ph_prob_xx_eo_PY
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>
   SUBROUTINE print_2ph_prob_xx_eo_PY(sys,st,label)
 
 	 type(param), intent(in)      		::  sys
@@ -1561,6 +1896,18 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_3ph_prob_kk_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - w_in
+  !>
   SUBROUTINE print_3ph_prob_kk_eo(sys,st,label,w_in)
 
 	 type(param), intent(in)      		::  sys
@@ -1619,6 +1966,18 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_3ph_prob_kk_eo_PY
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - w_in
+  !>
   SUBROUTINE print_3ph_prob_kk_eo_PY(sys,st,label,w_in)
 
 	 type(param), intent(in)      		::  sys
@@ -1682,6 +2041,18 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_3ph_prob_xx_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - x_in
+  !>
   SUBROUTINE print_3ph_prob_xx_eo(sys,st,label,x_in)
 
 	 type(param), intent(in)      		::  sys
@@ -1742,6 +2113,18 @@ CONTAINS
 
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_3ph_prob_xx_eo_PY
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - x_in
+  !>
   SUBROUTINE print_3ph_prob_xx_eo_PY(sys,st,label,x_in)
 
 	 type(param), intent(in)      		::  sys
@@ -1804,6 +2187,19 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_4ph_prob_kk_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - w_in_1
+  !>   - w_in_2
+  !>
   SUBROUTINE print_4ph_prob_kk_eo(sys,st,label,w_in_1,w_in_2)
 
 	 type(param), intent(in)      		::  sys
@@ -1857,6 +2253,18 @@ CONTAINS
 
   END SUBROUTINE
 
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_nphk_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - max_number
+  !>
   SUBROUTINE print_nphk_eo(sys,st,label,max_number)
 
 	 type(param), intent(in)      		::  sys
@@ -1925,6 +2333,18 @@ CONTAINS
 	 print*," "
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_nphx_eo
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - label
+  !>   - max_number
+  !>
   SUBROUTINE print_nphx_eo(sys,st,label,max_number)
 
 	 type(param), intent(in)      		::  sys
@@ -2009,6 +2429,14 @@ CONTAINS
   END SUBROUTINE
 
   !== photon destruciton routines
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: destroy_photon
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - x
+  !>
   SUBROUTINE destroy_photon(sys,st,x)
 
 	 type(param), intent(in)	   ::  sys
@@ -2030,6 +2458,15 @@ CONTAINS
 
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: destroy_photon_2
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>   - x
+  !>   - delta_x
+  !>
   SUBROUTINE destroy_photon_2(sys,st,x,delta_x)
 
 	 type(param), intent(in)	::  sys
@@ -2056,6 +2493,12 @@ CONTAINS
   END SUBROUTINE
 		  
   !-- GIF routines
+  !> -------------------------------------------------------------------------
+  !> FUNCTION: gif_dirname
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>
   FUNCTION gif_dirname(sys)
 
 	 type(param), intent(in)			::   sys
@@ -2064,6 +2507,12 @@ CONTAINS
 	 gif_dirname=trim(adjustl(sys%file_path))//"/gif_"//trim(adjustl(parameterchar(sys)))
 
   END FUNCTION
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: open_gif_files
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>
   SUBROUTINE open_gif_files(sys)
 
 	 type(param), intent(in)	::  sys
@@ -2109,6 +2558,12 @@ CONTAINS
 	 !		  write(30000, * ) 
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: end_of_GIF
+  !> -------------------------------------------------------------------------
+  !> Arguments:
+  !>   - sys
+  !>
   SUBROUTINE end_of_GIF(sys)
 	 
 	 type(param), intent(in)	::  sys
@@ -2126,6 +2581,16 @@ CONTAINS
 	 end if
 
   END SUBROUTINE
+  !> -------------------------------------------------------------------------
+  !> SUBROUTINE: print_gif_image
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
+  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !> Arguments:
+  !>   - sys
+  !>   - st
+  !>
   SUBROUTINE print_gif_image(sys,st)
 
 	 type(param), intent(in)	::  sys
