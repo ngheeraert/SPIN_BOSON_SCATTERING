@@ -1,42 +1,52 @@
 ! ==============================================================================
 !  FILE: systm.f90
 !
-!  PURPOSE
-!    Original research code used to produce the numerical data underlying the figures of:
-!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
-!      ultrastrong-coupling waveguide QED".
+!  PURPOSE & CONTEXT
+!    Core physics engine and data structures for the numerical simulation of 
+!    ultrastrong-coupling waveguide QED: 
+!      N. Gheeraert et al., "Particle production in ultrastrong-coupling 
+!      waveguide QED", Phys. Rev. A 98, 043816 (2018).
 !
-!  OVERVIEW
-!    This code implements a time-dependent variational simulation of the spin-boson
-!    model (a two-level system coupled to a continuum of bosonic modes) using a
-!    superposition of multimode coherent states (sometimes called the multi-polaron
-!    or MCS ansatz). The main workflow is:
-!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
-!      with systm:CalcDerivatives computing the variational equations of motion.
+!  PHYSICAL MODEL & METHODOLOGY
+!    Implements a time-dependent variational simulation of the spin-boson model 
+!    (a two-level system coupled to a one-dimensional continuum of bosonic modes). 
+!    The system's wave-function is approximated using a superposition of multimode 
+!    coherent states, commonly referred to as the multi-polaron or MCS (Multiple 
+!    Coherent States) ansatz.
+!
+!  CORE WORKFLOW
+!    This module defines the primary data structures and contains the critical 
+!    equations of motion (EOM) solver called by the integrator in `output.f90`. 
+!    Its main responsibilities are:
+!
+!      1. Data Structures : Defines `param`, `state`, and `traj`.
+!      2. Initialization  : Sets up ground states, single photons, and wavepackets.
+!      3. EOM Evaluation  : `CalcDerivatives` computes the variational overlaps 
+!                           and solves the dense linear system for parameter 
+!                           time-derivatives.
+!      4. Observables     : Evaluates energy, Pauli matrices, and multi-photon 
+!                           correlations across momentum and spatial domains.
+!
+!  EXECUTION HIERARCHY
+!      main.f90 
+!       └── output.f90:printTrajectory_DL 
+!            └── output.f90:evolveState_DL 
+!                 └── output.f90:Evolve_RK4 (integrator)
+!                      └── systm.f90:CalcDerivatives (computes variational EOMs)
 !
 !  BUILD / DEPENDENCIES
-!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
-
-! ==============================================================================
+!    * BLAS / LAPACK (Requires standard routines: ZGESV, ZGETRF, ZTRSM, ZPOTRF)
 !
+! ==============================================================================
+
 MODULE SYSTM 
-!> -------------------------------------------------------------------------
-!> MODULE: SYSTM
-!> -------------------------------------------------------------------------
-!> Purpose / context:
-!>   Module `SYSTM`: central container for simulation types and routines.
-!>   This module defines the core data structures (param/state/traj) and the
-!>   variational equations of motion used during time evolution.
-!> Arguments:
-!>   (none)
-!>
 
   USE consts
   USE lapackmodule
   USE inverse
   USE typedefs, only : cx => c_type, rl => r_type
 
-  IMPLICIT NONE 
+  IMPLICIT NONE
 
   TYPE param
   	 integer						 ::  fastcalcderiv, grid, back_track_on
@@ -102,16 +112,16 @@ MODULE SYSTM
 
 CONTAINS
 
-  !== initialize the parameters and get those in the command line
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: getParameters
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Parse command-line flags and populate the `param` structure (`sys`).
-  !>   Parameters map to the spin-boson model (Δ, α, cutoff) and to the incident
-  !>   wavepacket / drive (k0, sigma, x0, n_wp) used for scattering simulations.
+  !>   Parses command-line arguments to populate the primary `param` structure (`sys`).
+  !>   Initializes the physical parameters of the spin-boson model (coupling alpha, 
+  !>   detuning delta, frequency cutoff wc) and the incident wavepacket properties 
+  !>   (k0, sigma, x0). Also defines the momentum grid `w(k)` and coupling `g(k)`.
   !> Arguments:
-  !>   - sys
+  !>   - sys : Parameter structure to be populated and allocated.
   !>
   SUBROUTINE getParameters(sys)
 
@@ -313,17 +323,18 @@ CONTAINS
 
   END SUBROUTINE  
 
-  !== Initialisation routines
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: allocate_state
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Allocate all arrays inside a `state` based on the number of coherent
-  !>   components (`np`) and number of modes (`nmode`).
+  !>   Allocates memory for all arrays within a `state` object based on the 
+  !>   number of coherent components (`np`) and the size of the momentum grid (`nmode`).
+  !>   Initializes the multi-polaron amplitudes (p, q), modal arrays (f, h, fo, ho),
+  !>   their time derivatives, and the extensive overlap/matrix arrays.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - npvalue
+  !>   - sys     : Parameter structure defining `nmode`.
+  !>   - st      : The state object to be allocated and zeroed out.
+  !>   - npvalue : Optional override for the number of polarons (defaults to sys%npini).
   !>
   SUBROUTINE allocate_state(sys,st,npvalue)
 
@@ -382,12 +393,18 @@ CONTAINS
 	 st = tmpst
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: allocate_trajectory
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Allocates memory for tracking the system's time evolution. Dimensions 
+  !>   the arrays inside the `traj` object based on the total simulation time 
+  !>   (`tmax`) and integration step (`dt`), preparing arrays to log energy, 
+  !>   norm, numerical error, basis size, and Pauli spin vectors.
   !> Arguments:
-  !>   - sys
-  !>   - tr
+  !>   - sys : Parameter structure defining `tmax` and `dt`.
+  !>   - tr  : The trajectory tracking object to be allocated.
   !>
   SUBROUTINE allocate_trajectory(sys,tr)
 
@@ -424,16 +441,19 @@ CONTAINS
 	 print*, "-- TRAJECTORY ALLOCATED"
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_gs
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Initializes the system exclusively in its numerically pre-calculated 
+  !>   ground state (GS) for the ultrastrong coupling regime. Reads the GS 
+  !>   amplitudes and spatial profiles from an external data file generated 
+  !>   by a separate minimization routine.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - time_in
+  !>   - sys     : Parameter structure.
+  !>   - st      : Target state to be overwritten with the GS data.
+  !>   - time_in : The initial simulation start time.
   !>
   SUBROUTINE initialise_gs(sys,st,time_in)
 
@@ -483,21 +503,24 @@ CONTAINS
 	 CALL normalise(st)
 
   END SUBROUTINE 
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_cs_gs
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Prepares the primary scattering configuration: an incident Gaussian 
+  !>   coherent state wavepacket scattering off the fully dressed ground state 
+  !>   of the qubit. Superimposes the bare incoming photon amplitudes with the 
+  !>   bound virtual photon cloud of the ground state.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k0
-  !>   - x0
-  !>   - sigma
-  !>   - nb
-  !>   - ini_cloud_st
-  !>   - t_in
+  !>   - sys          : Parameter structure.
+  !>   - st           : Target state initialized with the combined configuration.
+  !>   - k0           : Central momentum of the incident wavepacket.
+  !>   - x0           : Initial spatial center of the wavepacket.
+  !>   - sigma        : Spatial spread of the wavepacket.
+  !>   - nb           : Mean photon number of the coherent state.
+  !>   - ini_cloud_st : Output backup containing just the bare ground state cloud.
+  !>   - t_in         : Optional initial time offset.
   !>
   SUBROUTINE initialise_cs_gs(sys,st, k0, x0, sigma, nb, ini_cloud_st, t_in)
 
@@ -608,20 +631,23 @@ CONTAINS
 	 print*, "=="
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_photon_gs
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Prepares a single-photon Fock state scattering off the dressed qubit 
+  !>   ground state. Within the multi-polaron ansatz, a single photon is 
+  !>   constructed by creating an antisymmetric superposition of two opposing 
+  !>   coherent states in the small-amplitude limit.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k0
-  !>   - x0
-  !>   - sigma
-  !>   - nb
-  !>   - ini_cloud_st
+  !>   - sys          : Parameter structure.
+  !>   - st           : Target state initialized with the single photon + GS.
+  !>   - k0           : Central momentum of the incident wavepacket.
+  !>   - x0           : Initial spatial center of the wavepacket.
+  !>   - sigma        : Spatial spread of the wavepacket.
+  !>   - nb           : Amplitude scaling parameter for the coherent components.
+  !>   - ini_cloud_st : Output backup containing just the bare ground state cloud.
   !>
   SUBROUTINE initialise_photon_gs(sys,st, k0, x0, sigma, nb, ini_cloud_st)
 
@@ -728,22 +754,23 @@ CONTAINS
 	 CALL normalise(st)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_cs_2freqs_gs
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Prepares a bi-chromatic (two-color) coherent wavepacket incident on the 
+  !>   qubit ground state. Sums two distinct Gaussian wavepackets in momentum 
+  !>   space (centered at `k0_1` and `k0_2`) before superimposing them onto the 
+  !>   ground state fields. Useful for analyzing frequency mixing processes.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k0_1
-  !>   - k0_2
-  !>   - x0
-  !>   - sigma
-  !>   - nb
-  !>   - ini_cloud_st
-  !>   - t_in
+  !>   - sys          : Parameter structure.
+  !>   - st           : Target state initialized with the combined configuration.
+  !>   - k0_1, k0_2   : Central momenta of the two wavepacket components.
+  !>   - x0, sigma    : Initial spatial center and spread.
+  !>   - nb           : Mean photon number amplitude.
+  !>   - ini_cloud_st : Output backup containing just the bare ground state cloud.
+  !>   - t_in         : Optional initial time offset.
   !>
   SUBROUTINE initialise_cs_2freqs_gs(sys,st, k0_1, k0_2, x0, sigma, nb, ini_cloud_st, t_in)
 
@@ -849,20 +876,21 @@ CONTAINS
 	 print*, "=="
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_photon
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Initializes a bare single-photon Fock state wavepacket without merging it 
+  !>   with the explicitly loaded qubit ground state. Built via an antisymmetric 
+  !>   superposition of two coherent states. Often used for reference baseline 
+  !>   calculations or specific decoupled system tests.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k0
-  !>   - x0
-  !>   - sigma
-  !>   - nb
-  !>   - ini_cloud_st
+  !>   - sys          : Parameter structure.
+  !>   - st           : Target state initialized with the single-photon fields.
+  !>   - k0, x0       : Central momentum and initial spatial center.
+  !>   - sigma, nb    : Spatial spread and amplitude scalar.
+  !>   - ini_cloud_st : Output backup for compatibility.
   !>
   SUBROUTINE initialise_photon(sys,st, k0, x0, sigma, nb, ini_cloud_st)
 
@@ -912,15 +940,17 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_from_file_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   Restores a previously saved simulation state from disk. Specifically 
+  !>   designed to ingest data formatted in the Even/Odd (EO) parity momentum 
+  !>   basis (`fks_fst` and `ps_fst` files). Reconstructs the symmetric and 
+  !>   antisymmetric arrays (`f, h, fo, ho`) and normalizes the restored state.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure (dictates file path and parameter tag).
+  !>   - st  : Target state to be populated with the loaded data.
   !>
   SUBROUTINE initialise_from_file_eo(sys,st)
 
@@ -995,15 +1025,19 @@ CONTAINS
 	 close(101)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: initialise_from_files_eo_2
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Prepare a specific initial state (ground state, coherent pulse, single photon,
-  !>   restart from file, etc.). Selection is typically controlled by sys%prep.
+  !>   An extended state-restore routine that reads both the Even/Odd state data 
+  !>   and the exact system parameters from separate files specified via command 
+  !>   line arguments (`-sys`, `-fks`, `-ps`). It dynamically adjusts basis sizes 
+  !>   (`npadd`) before allocating memory and loading the state, allowing for 
+  !>   flexible simulation continuation.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure (overwritten by the parsed parameter file).
+  !>   - st  : Target state to be allocated and populated with the loaded data.
   !>
   SUBROUTINE initialise_from_files_eo_2(sys,st) 
     type(param), intent(in out)			::  sys
@@ -1138,15 +1172,21 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: zke_f
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the symmetric (Even parity) momentum-space amplitude of an 
+  !>   incident Gaussian wavepacket. It computes the superposition of right- 
+  !>   and left-propagating components: z_k^e = z_k + z_{-k}. 
   !> Arguments:
-  !>   - sys
-  !>   - sigma
-  !>   - k0
-  !>   - x0
-  !>   - nb
+  !>   - sys   : Parameter structure defining the momentum grid (`w` and `dk1`).
+  !>   - sigma : Spatial spread of the wavepacket in real space.
+  !>   - k0    : Central momentum of the wavepacket.
+  !>   - x0    : Initial spatial center coordinate.
+  !>   - nb    : Mean photon number amplitude.
+  !> Return:
+  !>   - complex(cx) : Array of size `sys%nmode` containing the symmetric amplitudes.
   !>
   FUNCTION zke_f(sys, sigma, k0 , x0, nb) result(zkout)
 
@@ -1173,15 +1213,22 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: zko_f
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the antisymmetric (Odd parity) momentum-space amplitude of an 
+  !>   incident Gaussian wavepacket. It computes the difference between right- 
+  !>   and left-propagating components: z_k^o = z_k - z_{-k}.
   !> Arguments:
-  !>   - sys
-  !>   - sigma
-  !>   - k0
-  !>   - x0
-  !>   - nb
+  !>   - sys   : Parameter structure.
+  !>   - sigma : Spatial spread of the wavepacket in real space.
+  !>   - k0    : Central momentum of the wavepacket.
+  !>   - x0    : Initial spatial center coordinate.
+  !>   - nb    : Mean photon number amplitude.
+  !> Return:
+  !>   - complex(cx) : Array of size `sys%nmode` containing the antisymmetric amplitudes.
   !>
   FUNCTION zko_f(sys, sigma, k0 , x0, nb) result(zkout)
 
@@ -1209,11 +1256,18 @@ CONTAINS
 
   END FUNCTION
 
-	 !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
 	 !> FUNCTION: parameterchar
 	 !> -------------------------------------------------------------------------
+	 !> Purpose / context:
+	 !>   Utility function that constructs a unique string identifier based on the 
+	 !>   current physical and numerical parameters (e.g., alpha, delta, nmode, dt). 
+	 !>   This string is appended to output filenames to ensure data generated 
+	 !>   during parameter sweeps is properly labeled and organized without overwriting.
 	 !> Arguments:
-	 !>   - sys
+	 !>   - sys : Parameter structure.
+	 !> Return:
+	 !>   - character(len=200) : The concatenated parameter string.
 	 !>
 	 FUNCTION parameterchar(sys)
 
@@ -1275,14 +1329,17 @@ CONTAINS
 					 "_p"//trim(adjustl(prepchar))
 
 	 END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_param
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Writes out the complete set of simulation parameters to a dedicated text file 
+  !>   (usually prefixed with `sys_`). This ensures absolute reproducibility of the 
+  !>   data, allowing post-processing scripts to automatically parse the system 
+  !>   configuration alongside the physical observables.
   !> Arguments:
-  !>   - sys
+  !>   - sys : Parameter structure to be exported.
   !>
   SUBROUTINE print_param(sys)
   
@@ -1314,13 +1371,20 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: gs_filename
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Constructs the expected file path and name for the pre-calculated ground 
+  !>   state data. The filename format rigidly depends on the coupling `alpha`, 
+  !>   detuning `delta`, basis size `pols`, and cutoff constraints, ensuring the 
+  !>   scatterer is initialized with a ground state matching the current parameters.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - path_in
+  !>   - sys     : Parameter structure.
+  !>   - st      : State structure determining the number of polarons (`np`).
+  !>   - path_in : Optional override for the target directory (defaults to `gs_data`).
+  !> Return:
+  !>   - character(len=200) : The fully qualified ground state file path.
   !>
   FUNCTION gs_filename(sys,st,path_in)
 
@@ -1350,21 +1414,19 @@ CONTAINS
 
   END FUNCTION
 
-  !=======================================
-  !== Calculation of the derivatives
-  !======================================
-
- !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
  !> SUBROUTINE: CalcDerivatives
  !> -------------------------------------------------------------------------
  !> Purpose / context:
- !>   Compute time-derivatives for the variational parameters of the multimode
- !>   coherent-state superposition (MCS / multi-polaron ansatz).
- !>   Builds overlap matrices and solves linear systems for (fdot,hdot,pdot,qdot).
+ !>   The core variational equations of motion (EOM) solver. Computes the time 
+ !>   derivatives of all variational parameters (f, h, p, q) by constructing the 
+ !>   multi-polaron overlap matrices, building the right-hand side (RHS) driving 
+ !>   terms, and solving the resulting dense linear system via LAPACK matrix inversion.
+ !>   Supports both direct inverse and optimized "super inverse" methods.
  !> Arguments:
- !>   - sys
- !>   - st
- !>   - superInverseFlag
+ !>   - sys              : Parameter structure.
+ !>   - st               : State object (updated in place with fDot, hDot, pDot, qDot).
+ !>   - superInverseFlag : Boolean to toggle the block-matrix optimized inverse routine.
  !>
  SUBROUTINE CalcDerivatives(sys,st,superInverseFlag)
 
@@ -1512,14 +1574,20 @@ CONTAINS
 
  END SUBROUTINE
 
-	 !-- Derivatives of E with respect to sepcified variable STARRED
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: P_j
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the gradient of the system energy with respect to the complex 
+  !>   conjugate of the qubit's "up" amplitude, p_j^*. Used to construct the 
+  !>   RHS driving terms for the variational equations of motion. Includes 
+  !>   contributions from the free field energy and the spin-boson coupling.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - m
+  !>   - sys : Parameter structure (provides `delta` and coupling definitions).
+  !>   - st  : Current state object containing overlap matrices and amplitudes.
+  !>   - m   : Index of the specific polaron component being evaluated.
+  !> Return:
+  !>   - complex(cx) : The derivative magnitude evaluated at polaron `m`.
   !>
   FUNCTION P_j(sys,st,m)
 
@@ -1538,13 +1606,21 @@ CONTAINS
 	 P_j = -Ic*P_j
   
   END FUNCTION 
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: Q_j
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the gradient of the system energy with respect to the complex 
+  !>   conjugate of the qubit's "down" amplitude, q_j^*. Acts as the direct 
+  !>   counterpart to `P_j` for the lower two-level state, aggregating modal 
+  !>   overlaps and field expectation values.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - m
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !>   - m   : Index of the specific polaron component being evaluated.
+  !> Return:
+  !>   - complex(cx) : The derivative magnitude evaluated at polaron `m`.
   !>
   FUNCTION Q_j(sys,st,m)
 
@@ -1563,13 +1639,21 @@ CONTAINS
 	 Q_j = -Ic*Q_j
 
   END FUNCTION 
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: F_j
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the functional derivative of the system energy with respect 
+  !>   to the continuous photonic mode amplitudes associated with the qubit 
+  !>   "up" state, f_j^*(k). Produces the local momentum-space driving forces 
+  !>   across all field frequencies.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - j
+  !>   - sys : Parameter structure (provides `g(k)` and `w(k)` arrays).
+  !>   - st  : Current state object.
+  !>   - j   : Index of the specific polaron component being evaluated.
+  !> Return:
+  !>   - complex(cx) : Array of size `sys%nmode` containing the derivative across the k-grid.
   !>
   FUNCTION F_j(sys,st,j)
 
@@ -1589,13 +1673,21 @@ CONTAINS
 	 F_j(:) = - Ic*F_j(:) 
 
 	 END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: H_j
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the functional derivative of the system energy with respect 
+  !>   to the continuous photonic mode amplitudes associated with the qubit 
+  !>   "down" state, h_j^*(k). Acts as the direct counterpart to `F_j` for 
+  !>   the lower energy manifold of the spin-boson system.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - j
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !>   - j   : Index of the specific polaron component being evaluated.
+  !> Return:
+  !>   - complex(cx) : Array of size `sys%nmode` containing the derivative across the k-grid.
   !>
   FUNCTION H_j(sys,st,j)
 
@@ -1616,12 +1708,19 @@ CONTAINS
 
 	 END FUNCTION
 	 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: update_sums
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   A core performance-critical utility that precomputes and caches the extensive 
+  !>   matrix elements needed for the variational equations of motion (EOM). 
+  !>   It calculates the bosonic overlap matrices (`ov_ff`, `ov_hh`, `ov_fh`, `ov_hf`) 
+  !>   between all polarons, as well as the weighted frequency matrices (`bigW`) 
+  !>   and coupling matrices (`bigL`) representing the free-field and interaction 
+  !>   energies, respectively.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the `w` (frequency) and `g` (coupling) grids.
+  !>   - st  : Target state whose matrix elements are evaluated and updated in-place.
   !>
   SUBROUTINE update_sums(sys,st)
 	 
@@ -1654,18 +1753,20 @@ CONTAINS
 
   END SUBROUTINE
 
-  !=======================================
-  !== State functions
-  !======================================
-  
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: Energy
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Calculates the exact expectation value of the spin-boson Hamiltonian 
+  !>   for the current multi-polaron variational state. It sums three physical 
+  !>   contributions: the qubit bare energy (proportional to `delta`), the 
+  !>   free bosonic field energy (using `bigW`), and the dipole interaction 
+  !>   energy between the qubit and the field (using `bigL`).
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : The total system energy. Throws a warning if the imaginary part is non-zero.
   !>
   FUNCTION Energy(sys,st)
 	 type(param),intent(in)         				::  sys
@@ -1695,13 +1796,19 @@ CONTAINS
 	 energy = real(tmp)
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: norm
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Computes the overall L2 norm of the multi-polaron state to verify total 
+  !>   probability conservation. It evaluates the double sum over all coherent 
+  !>   state cross-terms, factoring in both the qubit amplitudes (`p`, `q`) 
+  !>   and the full bosonic inner products (Even/Odd parity spaces).
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : The scalar norm of the variational wavefunction.
   !>
   FUNCTION norm(st)
 
@@ -1726,13 +1833,18 @@ CONTAINS
 	 norm = sqrt(  real(tmp) )
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: normalise
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Enforces probability conservation by normalizing the multi-polaron state. 
+  !>   It calculates the total state norm via `norm(st)` and scales the qubit 
+  !>   probability amplitudes (`p` and `q`) accordingly. The bosonic displacement 
+  !>   amplitudes (`f`, `h`) are left untouched, as scaling them would change the 
+  !>   physical photon number rather than the state normalization.
   !> Arguments:
-  !>   - st
+  !>   - st : Target state to be normalized in-place.
   !>
   SUBROUTINE normalise(st)
 
@@ -1745,15 +1857,24 @@ CONTAINS
 	 st%q = st%q/normval
 
   END SUBROUTINE
- !> -------------------------------------------------------------------------
- !> FUNCTION: error
- !> -------------------------------------------------------------------------
- !> Arguments:
- !>   - sys
- !>   - oost
- !>   - ost
- !>   - st
- !>
+
+!> -------------------------------------------------------------------------
+  !> FUNCTION: error
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the McLachlan/Dirac-Frenkel variational error metric. This 
+  !>   quantifies how well the restricted multi-polaron ansatz is capturing the 
+  !>   true Schrödinger time evolution. It computes the distance between the 
+  !>   projected time derivatives and the exact Hamiltonian action on the state. 
+  !>   Used adaptively to trigger the addition of new polarons (basis enlargement).
+  !> Arguments:
+  !>   - sys  : Parameter structure.
+  !>   - oost : State at t - 2*dt.
+  !>   - ost  : State at t - dt.
+  !>   - st   : Current state at time t.
+  !> Return:
+  !>   - complex(cx) : The variational error metric.
+  !>
  FUNCTION error(sys,oost,ost,st)
 	 
 	 type(param),intent(in)		::  sys
@@ -1863,15 +1984,19 @@ CONTAINS
 
   END FUNCTION	
 
-  !-- Calculate the overlap between two coherent states
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: ov_states
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Computes the full quantum mechanical overlap (inner product) between 
+  !>   two entirely separate multi-polaron states, `<st1 | st2>`. It loops 
+  !>   over all cross-combinations of their respective coherent bases, incorporating 
+  !>   both the spin (`p`, `q`) and bosonic field (`f`, `h`) overlaps.
   !> Arguments:
-  !>   - st1
-  !>   - st2
+  !>   - st1 : First (bra) state object.
+  !>   - st2 : Second (ket) state object.
+  !> Return:
+  !>   - complex(cx) : The complex inner product.
   !>
   FUNCTION ov_states(st1,st2)
 
@@ -1892,14 +2017,19 @@ CONTAINS
 	 ov_states = tmp
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: ov_scalar
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Computes the fundamental bosonic overlap between two scalar coherent 
+  !>   state amplitudes. Evaluates the standard coherent state inner product 
+  !>   formula: exp(-0.5*|f1|^2 - 0.5*|f2|^2 + f1^* f2).
   !> Arguments:
-  !>   - f1
-  !>   - f2
+  !>   - f1 : First scalar complex amplitude.
+  !>   - f2 : Second scalar complex amplitude.
+  !> Return:
+  !>   - complex(cx) : The overlap scalar.
   !>
   FUNCTION ov_scalar(f1,f2)
 
@@ -1914,14 +2044,19 @@ CONTAINS
         ov_scalar = exp( -0.5_rl*tmp1 - 0.5_rl*tmp2 + tmp3 ) 
 
   END FUNCTION	ov_scalar
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: ov
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Computes the macroscopic bosonic overlap between two multimode continuous 
+  !>   coherent states. Generalizes the scalar coherent overlap to vectors of 
+  !>   modes by taking the dot product across the entire momentum grid `k`.
   !> Arguments:
-  !>   - f1
-  !>   - f2
+  !>   - f1 : First complex mode array (bra).
+  !>   - f2 : Second complex mode array (ket).
+  !> Return:
+  !>   - complex(cx) : The total multimode coherent overlap.
   !>
   FUNCTION ov(f1,f2)
 
@@ -1949,14 +2084,18 @@ CONTAINS
 
   END FUNCTION	ov
 
-  !-- Probability of being in the up or down state
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: upProb
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Calculates the reduced density matrix probability of finding the qubit 
+  !>   (two-level system) in the excited "up" state. It traces out the bosonic 
+  !>   environment by summing the squared magnitudes of the `p` amplitudes, 
+  !>   weighted by their associated bosonic overlaps `ov_ff`.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object.
+  !> Return:
+  !>   - real(rl) : The spin-up probability.
   !>
   FUNCTION upProb(st)
 
@@ -1974,13 +2113,18 @@ CONTAINS
 	 upprob=real(tmp)
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: downProb
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Compute a basic diagnostic quantity derived from the current variational state.
+  !>   Calculates the reduced density matrix probability of finding the qubit 
+  !>   in the ground "down" state. Counterpart to `upProb`, it traces out the 
+  !>   environment by evaluating the `q` amplitudes and the `ov_hh` overlaps.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object.
+  !> Return:
+  !>   - real(rl) : The spin-down probability.
   !>
   FUNCTION downProb(st)
 
@@ -1999,12 +2143,18 @@ CONTAINS
 
   END FUNCTION
 
-  !-- Expectation value of sigmaX
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: sigmaX
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the expectation value of the Pauli X operator, ⟨σ_X⟩, for the 
+  !>   artificial atom (qubit). It traces out the bosonic bath by evaluating 
+  !>   the off-diagonal coherence terms between the qubit "up" (p) and "down" (q) 
+  !>   amplitudes, weighted by the cross-state bosonic overlaps `ov_fh` and `ov_hf`.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : The expectation value of σ_X.
   !>
   FUNCTION sigmaX(st)
   
@@ -2025,11 +2175,18 @@ CONTAINS
 	 sigmaX = real(tmp)
   
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: sigmaZ
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the expectation value of the Pauli Z operator, ⟨σ_Z⟩, representing 
+  !>   the population inversion of the two-level system. Evaluated simply as the 
+  !>   difference between the spin-up and spin-down probabilities.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : The expectation value of σ_Z (ranges from -1 to 1).
   !>
   FUNCTION sigmaZ(st)
   
@@ -2039,13 +2196,20 @@ CONTAINS
 	 sigmaZ = upProb(st) - downProb(st)
   
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: d_sigmaZ
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the numerical time derivative of the population inversion, 
+  !>   d⟨σ_Z⟩/dt, using a simple finite-difference approach between the current 
+  !>   and previous time steps. Useful for tracking emission rates or Rabi oscillations.
   !> Arguments:
-  !>   - ost
-  !>   - st
-  !>   - dt
+  !>   - ost : Old state object (at time t - dt).
+  !>   - st  : Current state object (at time t).
+  !>   - dt  : The integration time step width.
+  !> Return:
+  !>   - real(rl) : The rate of change of the population inversion.
   !>
   FUNCTION d_sigmaZ(ost,st,dt)
   
@@ -2056,11 +2220,19 @@ CONTAINS
 	 d_sigmaZ = ( sigmaZ(st) - sigmaZ(ost) ) / dt
   
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: sigmaY
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the expectation value of the Pauli Y operator, ⟨σ_Y⟩. Similar 
+  !>   to σ_X, it traces over the bosonic environment, but applies the appropriate 
+  !>   complex phase (i) to the off-diagonal off-diagonal coherences between 
+  !>   the "up" and "down" qubit manifolds.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : The expectation value of σ_Y.
   !>
   FUNCTION sigmaY(st)
   
@@ -2081,15 +2253,22 @@ CONTAINS
   
   END FUNCTION
 
-  !-- Fourrier routine EO
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: FT_X_to_k_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Performs a spatially windowed Fourier transform from real space (x) back 
+  !>   into momentum space (k) within the Even/Odd (EO) parity basis. It uses 
+  !>   smoothed arctangent envelope functions to explicitly filter out the 
+  !>   bound state localized near the qubit (x=0), isolating the freely propagating 
+  !>   scattered wavepacket.
   !> Arguments:
-  !>   - sys
-  !>   - fnx
-  !>   - sign_k
-  !>   - xmin
+  !>   - sys    : Parameter structure.
+  !>   - fnx    : The real-space spatial distribution array.
+  !>   - sign_k : Phase sign convention for the transform (+1 or -1).
+  !>   - xmin   : Optional spatial cutoff boundary to exclude the interaction region.
+  !> Return:
+  !>   - complex(cx) : The filtered momentum-space array.
   !>
   FUNCTION FT_X_to_k_EO(sys,fnx,sign_k,xmin)
 
@@ -2134,12 +2313,20 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: f_nx_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Constructs the real-space bosonic spatial distribution `f(x)` associated 
+  !>   with the qubit "up" state manifold. It transforms the symmetric (`f`) and 
+  !>   antisymmetric (`fo`) momentum arrays into real-space coordinates using the 
+  !>   dispersion relation embedded in the grid.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object containing the momentum arrays.
+  !> Return:
+  !>   - complex(cx) : The real-space field array for the "up" branch.
   !>
   FUNCTION f_nx_EO(sys,st)
 
@@ -2159,12 +2346,19 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: h_nx_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Constructs the real-space bosonic spatial distribution `h(x)` associated 
+  !>   with the qubit "down" state manifold. Counterpart to `f_nx_EO`, converting 
+  !>   the `h` and `ho` arrays into their coordinate-space representations.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object containing the momentum arrays.
+  !> Return:
+  !>   - complex(cx) : The real-space field array for the "down" branch.
   !>
   FUNCTION h_nx_EO(sys,st)
 
@@ -2187,12 +2381,19 @@ CONTAINS
 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: n_up_k_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the momentum-space mean photon number spectrum strictly projected 
+  !>   onto the qubit's excited "up" state subspace. It zeroes out the "down" 
+  !>   amplitudes, normalizes the intermediate state, and evaluates the expectation 
+  !>   value of the photon number operator a^†_k a_k.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : Array containing the spin-projected photon spectrum.
   !>
   FUNCTION n_up_k_EO(sys,st)
 
@@ -2226,12 +2427,19 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: n_down_k_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the momentum-space mean photon number spectrum strictly projected 
+  !>   onto the qubit's ground "down" state subspace. It zeroes out the "up" 
+  !>   amplitudes, normalizes, and calculates the expected photon count across `k`.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : Array containing the spin-projected photon spectrum.
   !>
   FUNCTION n_down_k_EO(sys,st)
 
@@ -2266,12 +2474,20 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: n_k_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the total momentum-space mean photon number spectrum, n_k, for the 
+  !>   full system. It recombines the symmetric and antisymmetric modes into standard 
+  !>   plane-wave bases and calculates the total photon count by summing the 
+  !>   contributions from both the "up" and "down" qubit branches.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : Array containing the total photon spectrum.
   !>
   FUNCTION n_k_EO(sys,st)
 
@@ -2305,12 +2521,20 @@ CONTAINS
 	 end do
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: n_x_EO
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the total spatial photon density profile, n(x). Transforms the 
+  !>   Even/Odd momentum arrays into real space via `f_nx_eo` and `h_nx_eo`, 
+  !>   and evaluates the expectation value of the local photon number operator 
+  !>   across both the "up" and "down" qubit manifolds.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array containing the total real-space photon density.
   !>
   FUNCTION n_x_EO(sys,st)
 
@@ -2340,12 +2564,18 @@ CONTAINS
 
   END FUNCTION
 
-  !-- total number of photons
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: n_up_eo
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the total integrated, macroscopic number of photons associated 
+  !>   exclusively with the qubit "up" state. Sums the total mode occupation 
+  !>   across the entire spatial/momentum grid while projecting out the "down" 
+  !>   state contributions.
   !> Arguments:
-  !>   - st
+  !>   - st : Current state object to evaluate.
+  !> Return:
+  !>   - real(rl) : Total macroscopic photon count in the "up" subspace.
   !>
   FUNCTION n_up_eo(st)
 
@@ -2378,12 +2608,19 @@ CONTAINS
   !== PHOTON DECOMPOSITION FUNCITONS
   !======================================================
   
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: one_photon_k_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the probability amplitude for the single-photon momentum state 
+  !>   |1_k, up>. Projects the complex multi-polaron ansatz onto the single-photon 
+  !>   Fock space for the excited qubit manifold. Essential for evaluating elastic 
+  !>   scattering and single-photon transmission/reflection spectra.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the momentum grid.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : Array containing the complex single-photon amplitudes across k.
   !>
   FUNCTION one_photon_k_amp_up(sys,st)
 
@@ -2414,12 +2651,19 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: one_photon_k_amp_down
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the probability amplitude for the single-photon momentum state 
+  !>   |1_k, down>. Counterpart to `one_photon_k_amp_up`, mapping the single-photon 
+  !>   Fock state projection for the qubit ground state manifold.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the momentum grid.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : Array containing the complex single-photon amplitudes across k.
   !>
   FUNCTION one_photon_k_amp_down(sys,st)
 
@@ -2450,12 +2694,20 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: one_photon_x_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the probability amplitude for the single-photon spatial state 
+  !>   |1_x, up>. Transforms the multi-polaron projection into the real-space 
+  !>   single-photon basis. Useful for tracking the shape and dispersion of the 
+  !>   fundamental scattered wavepacket in time.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : Array of complex single-photon spatial amplitudes.
   !>
   FUNCTION one_photon_x_amp_up(sys,st)
 
@@ -2483,12 +2735,19 @@ CONTAINS
 	 end do
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: one_photon_x_amp_down
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the probability amplitude for the single-photon spatial state 
+  !>   |1_x, down>. Counterpart to `one_photon_x_amp_up`, evaluating the spatial 
+  !>   wavefunction of the single photon conditioned on the qubit being in its ground state.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : Array of complex single-photon spatial amplitudes.
   !>
   FUNCTION one_photon_x_amp_down(sys,st)
 
@@ -2517,12 +2776,19 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: two_photon_kk_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for the two-photon momentum state 
+  !>   |1_k1, 1_k2, up>. Projects the multi-polaron state onto the two-photon 
+  !>   Fock basis. Crucial for observing inelastic scattering phenomena where 
+  !>   a single high-energy photon splits into two lower-energy photons.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the momentum grid.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix containing the complex two-photon amplitudes P(k1, k2).
   !>
   FUNCTION two_photon_kk_amp_up(sys,st)
 
@@ -2561,12 +2827,19 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: two_photon_kk_amp_down
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for the two-photon momentum state 
+  !>   |1_k1, 1_k2, down>. Evaluates the inelastic frequency conversion spectra 
+  !>   associated with the qubit returning to its ground state after scattering.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the momentum grid.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix containing the complex two-photon amplitudes P(k1, k2).
   !>
   FUNCTION two_photon_kk_amp_down(sys,st)
 
@@ -2604,12 +2877,20 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: two_photon_xx_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for the two-photon spatial state 
+  !>   |1_x1, 1_x2, up>. Maps the two-photon correlation into real space to 
+  !>   investigate spatial bunching, antibunching, or the formation of bound 
+  !>   photon molecules emerging from the ultrastrong scatterer.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix containing spatial two-photon amplitudes P(x1, x2).
   !>
   FUNCTION two_photon_xx_amp_up(sys,st)
 
@@ -2644,12 +2925,20 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: two_photon_xx_amp_p
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Similar physical context to `two_photon_xx_amp_up` (spatial two-photon 
+  !>   bunching amplitudes). This formulation isolates the evaluation explicitly 
+  !>   to the coherent amplitude weights `p` without decomposing the full spin 
+  !>   subspace, acting as a lightweight diagnostic for up-manifold correlations.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix of spatial two-photon amplitudes.
   !>
   FUNCTION two_photon_xx_amp_p(sys,st)
 
@@ -2682,12 +2971,20 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: two_photon_xx_amp_q
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for the two-photon spatial state 
+  !>   |1_x1, 1_x2, down>. Acts as the counterpart to `two_photon_xx_amp_p`, 
+  !>   evaluating real-space two-photon clustering (bunching/antibunching) 
+  !>   specifically for the down-manifold using the `q` amplitudes and `h` modes.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial grid `dx`.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix of spatial two-photon amplitudes.
   !>
   FUNCTION two_photon_xx_amp_q(sys,st)
 
@@ -2721,13 +3018,20 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: three_photon_kk_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for a three-photon momentum state 
+  !>   |1_k1, 1_k2, 1_k_in, up>. By fixing one of the photon momenta (`k_in`), 
+  !>   it collapses the 3D tensor into a 2D matrix, allowing visualization of 
+  !>   three-body scattering channels where the artificial atom is left excited.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k_in
+  !>   - sys  : Parameter structure.
+  !>   - st   : Current state object.
+  !>   - k_in : The specific momentum index fixed for the third photon.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix of the constrained three-photon amplitudes.
   !>
   FUNCTION three_photon_kk_amp_up(sys,st,k_in)
 
@@ -2765,13 +3069,21 @@ CONTAINS
 	 end do 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: three_photon_xx_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for a three-photon spatial state 
+  !>   |1_x1, 1_x2, 1_x_in, up>. Fixes one spatial coordinate (`i_in`) to 
+  !>   evaluate the real-space two-body correlations of the remaining photons 
+  !>   relative to the fixed third photon.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - i_in
+  !>   - sys  : Parameter structure.
+  !>   - st   : Current state object.
+  !>   - i_in : The specific spatial grid index fixed for the third photon.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix of constrained spatial amplitudes.
   !>
   FUNCTION three_photon_xx_amp_up(sys,st,i_in)
 
@@ -2806,12 +3118,20 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: three_photon_xxx_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the full 3D spatial probability amplitude for the three-photon 
+  !>   state |1_x1, 1_x2, 1_x3, up>. Resolves the complete spatial correlation 
+  !>   tensor without constraints, incorporating the bosonic permutation 
+  !>   combinatoric factor (1/6 = 1/3!).
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the spatial bounds.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 3D array tensor containing the full spatial amplitudes.
   !>
   FUNCTION three_photon_xxx_amp_up(sys,st)
 
@@ -2850,12 +3170,19 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: three_photon_xxx_amp_p
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the 3D spatial three-photon correlation strictly using the 
+  !>   coherent weight amplitudes `p` and spatial fields `fx`. Acts as a 
+  !>   lightweight alias/variant for the excited manifold projection, identical 
+  !>   in physics context to `three_photon_xxx_amp_up`.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 3D array tensor of spatial amplitudes.
   !>
   FUNCTION three_photon_xxx_amp_p(sys,st)
 
@@ -2892,14 +3219,20 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: sub_three_photon_xxx_amp_p
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   A memory-optimized block evaluation of the 3D three-photon spatial 
+  !>   probability. To manage stack limits and optimize cache performance 
+  !>   during the heavy O(N^3) tensor population, it breaks the coordinate 
+  !>   space into distinct contiguous blocks (`ar1` and `ar2`) and populates 
+  !>   them sequentially.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ar1
-  !>   - ar2
+  !>   - sys      : Parameter structure.
+  !>   - st       : Current state object.
+  !>   - ar1, ar2 : Target 3D output arrays representing spatial blocks.
   !>
   SUBROUTINE sub_three_photon_xxx_amp_p(sys,st,ar1,ar2)
 
@@ -2941,14 +3274,20 @@ CONTAINS
 
 	 
   END SUBROUTINE
+
+!> -------------------------------------------------------------------------
+  !> SUBROUTINE: sub_three_photon_xxx_amp_p
   !> -------------------------------------------------------------------------
-  !> SUBROUTINE: sub_three_photon_xxx_amp_q
-  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   A memory-optimized block evaluation of the 3D three-photon spatial 
+  !>   probability. To manage stack limits and optimize cache performance 
+  !>   during the heavy O(N^3) tensor population, it breaks the coordinate 
+  !>   space into distinct contiguous blocks (`ar1` and `ar2`) and populates 
+  !>   them sequentially.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ar1
-  !>   - ar2
+  !>   - sys      : Parameter structure.
+  !>   - st       : Current state object.
+  !>   - ar1, ar2 : Target 3D output arrays representing spatial blocks.
   !>
   SUBROUTINE sub_three_photon_xxx_amp_q(sys,st,ar1,ar2)
 
@@ -2986,13 +3325,20 @@ CONTAINS
 	 end do
 	 
   END SUBROUTINE
-!
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: three_photon_xxx_amp_q
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Evaluates the full 3D spatial probability amplitude for the three-photon 
+  !>   state |1_x1, 1_x2, 1_x3, down>. To dramatically reduce O(N^3) runtime, 
+  !>   it exploits bosonic permutation symmetry by calculating only unique index 
+  !>   combinations (i1 <= i2 <= i3) and mirroring the symmetric results.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - complex(cx) : 3D array tensor containing the populated spatial amplitudes.
   !>
   FUNCTION three_photon_xxx_amp_q(sys,st)
 
@@ -3032,14 +3378,20 @@ CONTAINS
 	 
   END FUNCTION
   
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: four_photon_kk_amp_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the joint probability amplitude for the four-photon momentum 
+  !>   state |1_k1, 1_k2, 1_k_in_1, 1_k_in_2, up>. Fixes two of the photon 
+  !>   momenta to render a 2D slice of the full 4D parameter space. Incorporates 
+  !>   the permutation combinatoric factor (1/24 = 1/4!).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k_in_1
-  !>   - k_in_2
+  !>   - sys            : Parameter structure.
+  !>   - st             : Current state object.
+  !>   - k_in_1, k_in_2 : Fixed momentum grid indices for the third and fourth photons.
+  !> Return:
+  !>   - complex(cx) : 2D array matrix of the constrained four-photon amplitudes.
   !>
   FUNCTION four_photon_kk_amp_up(sys,st,k_in_1,k_in_2)
 
@@ -3078,12 +3430,19 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_2_photon
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the integrated momentum-space two-photon spectrum. Evaluates 
+  !>   the normalized squared amplitudes of the multi-polaron state projected 
+  !>   onto the two-photon Fock basis. It traces over both the up and down 
+  !>   qubit manifolds to extract the total two-photon cross-section.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the marginal two-photon momentum density.
   !>
   FUNCTION nk_2_photon(sys,st)
 
@@ -3141,12 +3500,21 @@ CONTAINS
 	 nk_2_photon = 4 * nk_2_photon/sys%dk1
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_3_photon
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the integrated momentum-space three-photon spectrum. Reconstructs 
+  !>   the density of three-photon emission events by squaring the three-photon 
+  !>   amplitudes. It loops over a reduced index space and heavily relies on 
+  !>   integration symmetry factors (1, 2) to correctly account for indistinguishable 
+  !>   bosonic configurations while optimizing O(N^3) runtimes.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the marginal three-photon momentum density.
   !>
   FUNCTION nk_3_photon(sys,st)
 
@@ -3226,12 +3594,18 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_2_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the integrated momentum-space two-photon spectrum strictly 
+  !>   projected onto the qubit's excited "up" manifold. Useful for correlating 
+  !>   multiphoton scattering events specifically with the atomic state.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the up-projected two-photon spectrum.
   !>
   FUNCTION nk_2_photon_up(sys,st)
 
@@ -3281,12 +3655,20 @@ CONTAINS
 	 nk_2_photon_up = 4 * nk_2_photon_up/sys%dk1
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_2_photon_up_RR_LL
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the two-photon momentum spectrum constrained to strictly 
+  !>   co-propagating photon pairs (both Right-moving or both Left-moving) 
+  !>   within the "up" manifold. The inner loops conditionally filter `k1` and 
+  !>   `k2` indices to enforce same-sign momentum matching.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the co-propagating two-photon density.
   !>
   FUNCTION nk_2_photon_up_RR_LL(sys,st)
 
@@ -3338,12 +3720,20 @@ CONTAINS
 	 nk_2_photon_up_RR_LL = 4 * nk_2_photon_up_RR_LL/sys%dk1
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_2_photon_up_RL_RL
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the two-photon momentum spectrum constrained to counter-propagating 
+  !>   photon pairs (one Right-moving, one Left-moving) within the "up" manifold. 
+  !>   Filters indices to enforce opposite-sign momenta, characterizing bidirectional 
+  !>   multiphoton emission events.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the counter-propagating two-photon density.
   !>
   FUNCTION nk_2_photon_up_RL_RL(sys,st)
 
@@ -3395,12 +3785,21 @@ CONTAINS
 	 nk_2_photon_up_RL_RL = 4 * nk_2_photon_up_RL_RL/sys%dk1
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nx_2_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the spatial two-photon density profile for the "up" manifold. 
+  !>   It projects the 2D spatial two-photon amplitudes and sums the squared 
+  !>   modulus over the second coordinate, yielding the marginal probability 
+  !>   distribution of finding at least one photon at position x1 given a 
+  !>   two-photon event.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the spatial density of two-photon events.
   !>
   FUNCTION nx_2_photon_up(sys,st)
 
@@ -3447,12 +3846,20 @@ CONTAINS
 	 nx_2_photon_up = 4 * nx_2_photon_up/sys%dx
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nxx_2_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the equal-coordinate spatial two-photon density profile 
+  !>   (x1 = x2) for the "up" manifold. This directly evaluates the probability 
+  !>   of finding two photons at the exact same spatial location, which serves 
+  !>   as the unnormalized basis for the zero-delay bunching statistic, g2(0).
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array mapping the local two-photon overlap probability.
   !>
   FUNCTION nxx_2_photon_up(sys,st)
 
@@ -3492,12 +3899,20 @@ CONTAINS
 	 nxx_2_photon_up = 4 * nxx_2_photon_up/sys%dx
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_3_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the integrated momentum-space three-photon spectrum isolated to 
+  !>   the qubit "up" state. Sums the squared three-photon projection amplitudes 
+  !>   across the restricted frequency grid, carefully applying indistinguishability 
+  !>   factors to preserve normalization without redundant coordinate swapping.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the up-projected three-photon spectrum.
   !>
   FUNCTION nk_3_photon_up(sys,st)
 
@@ -3566,12 +3981,20 @@ CONTAINS
 	 nk_3_photon_up = 18*nk_3_photon_up/sys%dk1
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nx_3_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the spatial three-photon density profile for the "up" manifold. 
+  !>   Evaluates the marginal spatial probability distribution for finding a 
+  !>   photon at x1, conditioned on the combined spatial spread of the remaining 
+  !>   two photons integrated across the entire 3D grid.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array mapping the spatial bounds of three-photon packets.
   !>
   FUNCTION nx_3_photon_up(sys,st)
 
@@ -3637,12 +4060,20 @@ CONTAINS
 	 nx_3_photon_up = 18*nx_3_photon_up/sys%dx
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_4_photon_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the integrated momentum-space four-photon spectrum for the "up" 
+  !>   manifold. Evaluates the absolute squares of the complex 4D projection 
+  !>   amplitudes. Relies on advanced nested permutation symmetry conditions 
+  !>   (factors of 1, 3, 6) to make the massive O(N^4) integral computationally tractable.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object.
+  !> Return:
+  !>   - real(rl) : Array representing the up-projected four-photon momentum density.
   !>
   FUNCTION nk_4_photon_up(sys,st)
 
@@ -3726,14 +4157,21 @@ CONTAINS
 	 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_4_photon_up_k1_k2
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes a selectively constrained four-photon momentum spectrum where 
+  !>   two outgoing photon momenta are fixed (`k_in_1` and `k_in_2`). Used 
+  !>   primarily to isolate and analyze specific four-body correlated scattering 
+  !>   channels extracted from the overarching multi-polaron state. 
+  !>   (Note: Current implementation enforces `k_in_1 == k_in_2`).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - k_in_1
-  !>   - k_in_2
+  !>   - sys            : Parameter structure.
+  !>   - st             : Current state object.
+  !>   - k_in_1, k_in_2 : Fixed momenta for the reference correlated pair.
+  !> Return:
+  !>   - real(rl) : Array representing the restricted four-photon spectrum.
   !>
   FUNCTION nk_4_photon_up_k1_k2(sys,st,k_in_1,k_in_2) 
   	  
@@ -3798,13 +4236,24 @@ CONTAINS
 
 	 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: nk_5_photon_at_k_up
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes a highly constrained slice of the five-photon momentum spectrum 
+  !>   projected onto the "up" manifold. By fixing one of the five photon momenta 
+  !>   at a specific grid index (`n_k_in`) and integrating over the remaining 
+  !>   four variables, it isolates specific high-order multiphoton scattering 
+  !>   resonances. Includes combinatoric permutations (1/120 = 1/5!) and 
+  !>   symmetry factors (1, 3, 6) for indistinguishable bosons.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - n_k_in
+  !>   - sys    : Parameter structure.
+  !>   - st     : Current state object.
+  !>   - n_k_in : The fixed momentum grid index for the reference photon.
+  !> Return:
+  !>   - real(rl) : A scalar representing the total 5-photon probability density 
+  !>                associated with the emission of at least one photon at `n_k_in`.
   !>
   FUNCTION nk_5_photon_at_k_up(sys,st,n_k_in)
 
@@ -3893,11 +4342,18 @@ CONTAINS
   !== MATH FUNCTIONS
   !======================================================
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: factorial
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Standard mathematical utility function used internally to compute the 
+  !>   factorial of an integer (`n!`). Used primarily to evaluate the correct 
+  !>   bosonic permutation and normalization factors required when projecting 
+  !>   the multi-polaron ansatz onto higher-order N-photon Fock states.
   !> Arguments:
-  !>   - n
+  !>   - n : The integer input.
+  !> Return:
+  !>   - integer : The calculated factorial, `n!`.
   !>
   FUNCTION factorial(n)
 
@@ -3916,2303 +4372,3 @@ CONTAINS
 
 
 END MODULE SYSTM 
-!
-!  SUBROUTINE calcDerivatives(sys,st)
-!
-!	 type(param), intent(in)                         :: sys
-!	 type(state), intent(in out)                     :: st
-!	 complex(cx), dimension(st%np)                   :: bigP,bigQ
-!	 complex(cx), dimension(st%np, sys%nmode)        :: bigF, bigH
-!	 complex(cx), dimension(st%np,st%np)             :: a_f, a_h, b_f, b_h
-!	 complex(cx), dimension(st%np, sys%nmode)        :: rhsA_f, rhsA_h
-!	 complex(cx), dimension(st%np**2)                :: FullRHS_f, FullRHS_h, FullRHS_f_old, FullRHS_f_diff, FullRHS_f_new
-!	 complex(cx), dimension(st%np**2,st%np**2)       :: packed_D_f, packed_D_h, packed_D_f_old
-!	 complex(cx), dimension(st%np,st%np)             :: inv_ov_ff,inv_ov_hh, ov_ff_inv_noinv
-!	 integer                                         :: info,i,j,k,n,m
-!	 complex(cx), dimension(st%np,st%np)             :: tempMatrix_f, tempMatrix_h, tempMatrix_f_bis, tempMatrix_h_bis
-!	 complex(cx), dimension(st%np)                   :: tempMatrixTer_f, tempMatrixTer_h
-!	 complex(cx), dimension(st%np, sys%nmode)        :: tempfDot, temphDot
-!	 integer, dimension(st%np,st%np)						 :: KD
-!	 real(rl)													 :: tmp, norm2_check, norm2_inv_check
-!	 complex(cx)												 :: tmp_cx
-!
-!	 KD=0
-!	 do i=1, st%np
-!		KD(i,i)=1
-!	 end do
-!	 b_f=0._rl
-!	 b_h=0._rl
-!	 rhsA_f=0._rl
-!	 rhsA_h=0._rl
-!	 info=0
-!	 do i=1,st%np
-!		bigP(i) = P_j(sys,st,i)
-!		bigQ(i) = Q_j(sys,st,i)
-!		bigF(i,:) =  F_j(sys,st,i)
-!		bigH(i,:) =  H_j(sys,st,i)
-!	 end do
-!
-!	 !-- invert overlap matrices
-!	 !print*, 'invert overlap matrix'
-!	 inv_ov_ff=st%ov_ff
-!	 inv_ov_hh=st%ov_hh
-!	 CALL invertH(inv_ov_ff,info)
-!	 CALL invertH(inv_ov_hh,info)
-!	 ov_ff_inv_noinv = inv_ov_ff .matprod. st%ov_ff
-!
-!	 norm2_inv_check = 0._rl
-!	 do i=1,size(ov_ff_inv_noinv,1)
-!	   do j=1,size(ov_ff_inv_noinv,1)
-!		  if (i==j) then
-!			 norm2_inv_check = norm2_inv_check + abs(ov_ff_inv_noinv(i,j)-1._rl)**2
-!		  else 
-!			 norm2_inv_check = norm2_inv_check + abs(ov_ff_inv_noinv(i,j))**2
-!		  end if
-!	   end do
-!	 end do
-!
-!	 !-- build b matrices
-!	 !print*, 'build b matrices'
-!	 b_f=matmul(CONJG(st%f),TRANSPOSE(st%f))
-!	 b_h=matmul(CONJG(st%h), TRANSPOSE(st%h))
-!
-!	 !-- build RHS
-!	 ! print*, 'build rhs'
-!	 do k=1, sys%nmode
-!		do n=1, st%np
-!		  rhsA_f(n,k)=sum(inv_ov_ff(n,:)*(bigF(:,k)-st%f(n,k)*bigP(:)))
-!		  rhsA_h(n,k)=sum(inv_ov_hh(n,:)*(bigH(:,k)-st%h(n,k)*bigQ(:)))
-!		end do
-!	 end do
-!
-!	 tempMatrix_f_bis=matmul(CONJG(st%f),TRANSPOSE(rhsA_f))
-!	 tempMatrix_h_bis=matmul(CONJG(st%h),TRANSPOSE(rhsA_h))
-!
-!	 do i=1, st%np
-!		do n=1, st%np
-!		  FullRHS_f((i-1)*st%np+n)=tempMatrix_f_bis(i,n)
-!		  FullRHS_h((i-1)*st%np+n)=tempMatrix_h_bis(i,n)
-!		end do
-!	 end do
-!
-!	 !-- build Big D matrix
-!	 !print*, 'build big d matrix'
-!	 do m=1, st%np
-!		do j=1, st%np
-!		  do i=1, st%np
-!			 do n=1, st%np
-!				packed_D_f((i-1)*st%np+n,(m-1)*st%np+j) = KD(i,j)*KD(n,m)+ inv_ov_ff(n,j)*st%ov_ff(j,m)*(b_f(i,m)-b_f(i,n))
-!				packed_D_h((i-1)*st%np+n,(m-1)*st%np+j) = KD(i,j)*KD(n,m)+ inv_ov_hh(n,j)*st%ov_hh(j,m)*(b_h(i,m)-b_h(i,n))
-!			 end do
-!		  end do
-!		end do
-!	 end do
-!	 !-- system inversion
-!	 !print*, 'system inversion'
-!	 packed_D_f_old = packed_D_f
-!	 FullRHS_f_old = FullRHS_f
-!	 CALL solveEq_c(packed_D_f,FullRHS_f)
-!	 CALL solveEq_c(packed_D_h,FullRHS_h)
-!	 do j=1, st%np
-!		do m=1, st%np
-!		  a_f(m,j)=FullRHS_f((m-1)*st%np+j)
-!		  a_h(m,j)=FullRHS_h((m-1)*st%np+j)
-!		end do
-!	 end do
-!	 
-!	 norm2_check = 0._rl
-!	 do i=1,size(FullRHS_f,1)
-!	   tmp_cx = 0._rl
-!	   do j=1,size(FullRHS_f,1)
-!	     tmp_cx = tmp_cx + packed_D_f_old(i,j)*FullRHS_f(j)
-!	   end do
-!		FullRHS_f_new(i) = tmp_cx
-!	   norm2_check = norm2_check + abs(FullRHS_f_old(i) - FullRHS_f_new(i))**2
-!    end do
-!	 !FullRHS_f_diff = FullRHS_f_old - FullRHS_f_new
-!	 write(200,*) st%t,norm2_inv_check, norm2_check
-!	 !print*, st%t, real(abs(FullRHS_f_diff))
-!	 !print*, st%t, real(abs(FullRHS_f_old))
-!	 !print*,"------------------------"
-!	 !print*,
-!
-!
-!	 !-- fDot and hdot extraction
-!	 !print*, 'fDot and hdot'
-!
-!	 tempMatrix_f=inv_ov_ff .matprod. st%ov_ff*TRANSPOSE(a_f)
-!	 tempMatrix_h=inv_ov_hh .matprod. st%ov_hh*TRANSPOSE(a_h)
-!	 do i=1, st%np
-!		tempfDot(i,:)=SUM(tempMatrix_f(i,:))*st%f(i,:)
-!		temphDot(i,:)=SUM(tempMatrix_h(i,:))*st%h(i,:)
-!	 end do
-!	 st%fDot= rhsA_f-matmul(tempMatrix_f,st%f)+tempfDot
-!	 st%hDot= rhsA_h-matmul(tempMatrix_h,st%h)+temphDot
-!	 do i=1, st%np
-!		st%fDot(i,:)=st%fDot(i,:)/st%p(i)
-!		st%hDot(i,:)=st%hDot(i,:)/st%q(i)
-!	 end do
-!
-!
-!	 !-- evaluate pDot and qDot
-!	 !print*, 'evaluate pdot and qdot'
-!	 tempMatrixTer_f= MATMUL(inv_ov_ff,bigP)
-!	 st%pDot= 0.5_rl*( (/ (a_f(n,n), n=1, st%np) /) + st%p*(/ (conjg(a_f(m,m)), m=1, st%np) /) /CONJG(st%p) )
-!	 st%pdot=st%pDot + tempMatrixTer_f - SUM(tempMatrix_f, dim=2)
-!
-!	 tempMatrixTer_h= MATMUL(inv_ov_hh,bigQ)
-!	 st%qDot= 0.5_rl*( (/ (a_h(m,m), m=1, st%np) /) + st%q*(/ (conjg(a_h(m,m)), m=1, st%np) /) /CONJG(st%q) )
-!	 st%qdot=st%qDot + tempMatrixTer_h - SUM(tempMatrix_h, dim=2)
-!
-!	 if (info==1) then
-!		stop "fatal error in inversion"
-!	 end if
-!
-!  END SUBROUTINE
-!!  SUBROUTINE initialise_from_file_eo_13oct(sys,st)
-!
-!    type(param), intent(in)			  	::  sys
-!	 type(state), intent(in out)	  		::  st
-!	 integer  									::  k,i,j,m,npol, nlines, io, items
-!	 character(len=200)						::  fks_file,ps_file
-!	 real(rl)									::  f_r,f_i,h_r,h_i,p_r,q_r,p_i,q_i,a
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)	::  fks, hks
-!
-!	 print*, "Initialising from: ", parameterchar_13oct(sys)
-!	 fks_file=trim(adjustl(sys%file_path))//"/fks_fst_"//trim(adjustl(parameterchar_13oct(sys)))//".d"
-!	 ps_file=trim(adjustl(sys%file_path))//"/ps_fst_"//trim(adjustl(parameterchar_13oct(sys)))//".d"
-!
-!	 !== reading the number of coherent states from the file
-!	 items=0
-!	 open (unit=101,file=fks_file,action="read",status="old")
-!	 DO
-!		READ(101,'(f25.15)',iostat=io,advance='no') f_r
-!		IF (io/=0) EXIT
-!		items = items + 1
-!	 END DO
-!	 items=items-1 ! accounting for the last line
-!	 CLOSE (101)
-!	 npol=(items/4)
-!	 print*,"-- Number of coherent states in file= ",npol
-!
-!	 open (unit=101,file=ps_file,action="read",status="old")
-!	 open (unit=100,file=fks_file,action="read",status="old")
-!	 fks = 0._rl
-!	 hks = 0._rl
-!	 do  k=-sys%nmode+1,sys%nmode
-!		read(100,'(f25.15)',advance='no') a
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_r, h_r
-!	     fks(i,k) = f_r
-!	     hks(i,k) = h_r
-!	   end do
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_i, h_i
-!	     fks(i,k) = fks(i,k) + Ic*f_i
-!	     hks(i,k) = hks(i,k) + Ic*h_i
-!	   end do
-!	   read(100,*)
-!	 end do
-!
-!	 do  k=1,sys%nmode
-!		st%f(:,k) = sqrt(0.5_rl)*( fks(:,k) + fks(:,-k+1) )
-!		st%h(:,k) = sqrt(0.5_rl)*( hks(:,k) + hks(:,-k+1) )
-!		st%fo(:,k) = sqrt(0.5_rl)*( fks(:,k) - fks(:,-k+1) )
-!		st%ho(:,k) = sqrt(0.5_rl)*( hks(:,k) - hks(:,-k+1) )
-!	 end do
-!
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_r, q_r
-!		st%p(i) = p_r
-!		st%q(i) = q_r
-!	 end do
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_i, q_i
-!		st%p(i) = st%p(i) + Ic*p_i
-!		st%q(i) = st%q(i) + Ic*q_i
-!	 end do
-!
-!	 st%t = sys%tmax
-!
-!	 !-- updating the sums over k
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 close(100)
-!	 close(101)
-!
-!  END SUBROUTINE
-!  SUBROUTINE initialise_from_file_eo_1oct(sys,st)
-!
-!    type(param), intent(in)			  	::  sys
-!	 type(state), intent(in out)	  		::  st
-!	 integer  									::  k,i,j,m,npol, nlines, io, items
-!	 character(len=200)						::  fks_file,ps_file
-!	 real(rl)									::  f_r,f_i,h_r,h_i,p_r,q_r,p_i,q_i,a
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)	::  fks, hks
-!
-!	 print*, "Initialising from: ", parameterchar_1oct(sys)
-!	 fks_file=trim(adjustl(sys%file_path))//"/fks_fst_"//trim(adjustl(parameterchar_1oct(sys)))//".d"
-!	 ps_file=trim(adjustl(sys%file_path))//"/ps_fst_"//trim(adjustl(parameterchar_1oct(sys)))//".d"
-!
-!	 !== reading the number of coherent states from the file
-!	 items=0
-!	 open (unit=101,file=fks_file,action="read",status="old")
-!	 DO
-!		READ(101,'(f25.15)',iostat=io,advance='no') f_r
-!		IF (io/=0) EXIT
-!		items = items + 1
-!	 END DO
-!	 items=items-1 ! accounting for the last line
-!	 CLOSE (101)
-!	 npol=(items/4)
-!	 print*,"-- Number of coherent states in file= ",npol
-!
-!	 open (unit=101,file=ps_file,action="read",status="old")
-!	 open (unit=100,file=fks_file,action="read",status="old")
-!	 fks = 0._rl
-!	 hks = 0._rl
-!	 do  k=-sys%nmode+1,sys%nmode
-!		read(100,'(f25.15)',advance='no') a
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_r, h_r
-!	     fks(i,k) = f_r
-!	     hks(i,k) = h_r
-!	   end do
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_i, h_i
-!	     fks(i,k) = fks(i,k) + Ic*f_i
-!	     hks(i,k) = hks(i,k) + Ic*h_i
-!	   end do
-!	   read(100,*)
-!	 end do
-!
-!	 do  k=1,sys%nmode
-!		st%f(:,k) = sqrt(0.5_rl)*( fks(:,k) + fks(:,-k+1) )
-!		st%h(:,k) = sqrt(0.5_rl)*( hks(:,k) + hks(:,-k+1) )
-!		st%fo(:,k) = sqrt(0.5_rl)*( fks(:,k) - fks(:,-k+1) )
-!		st%ho(:,k) = sqrt(0.5_rl)*( hks(:,k) - hks(:,-k+1) )
-!	 end do
-!
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_r, q_r
-!		st%p(i) = p_r
-!		st%q(i) = q_r
-!	 end do
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_i, q_i
-!		st%p(i) = st%p(i) + Ic*p_i
-!		st%q(i) = st%q(i) + Ic*q_i
-!	 end do
-!
-!	 st%t = sys%tmax
-!
-!	 !-- updating the sums over k
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 close(100)
-!	 close(101)
-!
-!  END SUBROUTINE
-!  SUBROUTINE initialise_from_file_eo_28sept(sys,st)
-!
-!    type(param), intent(in)			  	::  sys
-!	 type(state), intent(in out)	  		::  st
-!	 integer  									::  k,i,j,m,npol, nlines, io, items
-!	 character(len=200)						::  fks_file,ps_file
-!	 real(rl)									::  f_r,f_i,h_r,h_i,p_r,q_r,p_i,q_i,a
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)	::  fks, hks
-!
-!	 print*, "Initialising from: ", parameterchar_28sept(sys)
-!	 fks_file=trim(adjustl(sys%file_path))//"/fks_fst_"//trim(adjustl(parameterchar_28sept(sys)))//".d"
-!	 ps_file=trim(adjustl(sys%file_path))//"/ps_fst_"//trim(adjustl(parameterchar_28sept(sys)))//".d"
-!
-!	 !== reading the number of coherent states from the file
-!	 items=0
-!	 open (unit=101,file=fks_file,action="read",status="old")
-!	 DO
-!		READ(101,'(f25.15)',iostat=io,advance='no') f_r
-!		IF (io/=0) EXIT
-!		items = items + 1
-!	 END DO
-!	 items=items-1 ! accounting for the last line
-!	 CLOSE (101)
-!	 npol=(items/4)
-!	 print*,"-- Number of coherent states in file= ",npol
-!
-!	 open (unit=101,file=ps_file,action="read",status="old")
-!	 open (unit=100,file=fks_file,action="read",status="old")
-!	 fks = 0._rl
-!	 hks = 0._rl
-!	 do  k=-sys%nmode+1,sys%nmode
-!		read(100,'(f25.15)',advance='no') a
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_r, h_r
-!	     fks(i,k) = f_r
-!	     hks(i,k) = h_r
-!	   end do
-!	   do i=1,npol
-!	     read(100,'(2f25.15)',advance='no') f_i, h_i
-!	     fks(i,k) = fks(i,k) + Ic*f_i
-!	     hks(i,k) = hks(i,k) + Ic*h_i
-!	   end do
-!	   read(100,*)
-!	 end do
-!
-!	 do  k=1,sys%nmode
-!		st%f(:,k) = sqrt(0.5_rl)*( fks(:,k) + fks(:,-k+1) )
-!		st%h(:,k) = sqrt(0.5_rl)*( hks(:,k) + hks(:,-k+1) )
-!		st%fo(:,k) = sqrt(0.5_rl)*( fks(:,k) - fks(:,-k+1) )
-!		st%ho(:,k) = sqrt(0.5_rl)*( hks(:,k) - hks(:,-k+1) )
-!	 end do
-!
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_r, q_r
-!		st%p(i) = p_r
-!		st%q(i) = q_r
-!	 end do
-!	 do i=1,npol
-!		read(101,'(2f25.15)',advance='no') p_i, q_i
-!		st%p(i) = st%p(i) + Ic*p_i
-!		st%q(i) = st%q(i) + Ic*q_i
-!	 end do
-!
-!	 st%t = sys%tmax
-!
-!	 !-- updating the sums over k
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 close(100)
-!	 close(101)
-!
-!  END SUBROUTINE
-!  SUBROUTINE initialise_from_file_eo_2tref(sys,st)
-!
-!    type(param), intent(in)			  	::  sys
-!	 type(state), intent(in out)	  		::  st
-!	 integer  									::  k,i,j,m
-!	 character(len=200)						::  fks_file,ps_file
-!	 real(rl)									::  f_r,f_i,h_r,h_i,p_r,q_r,p_i,q_i,a
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)	::  fks, hks
-!
-!	 print*, "Initialising from: ", parameterchar_2tref(sys)
-!	 fks_file=trim(adjustl(sys%file_path))//"/fks_fst_"//trim(adjustl(parameterchar_2tref(sys)))//".d"
-!	 ps_file=trim(adjustl(sys%file_path))//"/ps_fst_"//trim(adjustl(parameterchar_2tref(sys)))//".d"
-!	 open (unit=101,file=ps_file,action="read",status="old")
-!	 open (unit=100,file=fks_file,action="read",status="old")
-!
-!
-!	 fks = 0._rl
-!	 hks = 0._rl
-!	 do  k=-sys%nmode+1,sys%nmode
-!		read(100,'(f25.15)',advance='no') a
-!	   do i=1,st%np
-!	     read(100,'(2f25.15)',advance='no') f_r, h_r
-!	     fks(i,k) = f_r
-!	     hks(i,k) = h_r
-!	   end do
-!	   do i=1,st%np
-!	     read(100,'(2f25.15)',advance='no') f_i, h_i
-!	     fks(i,k) = fks(i,k) + Ic*f_i
-!	     hks(i,k) = hks(i,k) + Ic*h_i
-!	   end do
-!	   read(100,*)
-!	 end do
-!
-!	 do  k=1,sys%nmode
-!		st%f(:,k) = sqrt(0.5_rl)*( fks(:,k) + fks(:,-k+1) )
-!		st%h(:,k) = sqrt(0.5_rl)*( hks(:,k) + hks(:,-k+1) )
-!		st%fo(:,k) = sqrt(0.5_rl)*( fks(:,k) - fks(:,-k+1) )
-!		st%ho(:,k) = sqrt(0.5_rl)*( hks(:,k) - hks(:,-k+1) )
-!	 end do
-!
-!	 do i=1,st%np
-!		read(101,'(2f25.15)',advance='no') p_r, q_r
-!		st%p(i) = p_r
-!		st%q(i) = q_r
-!	 end do
-!	 do i=1,st%np
-!		read(101,'(2f25.15)',advance='no') p_i, q_i
-!		st%p(i) = st%p(i) + Ic*p_i
-!		st%q(i) = st%q(i) + Ic*q_i
-!	 end do
-!
-!	 st%t = sys%tmax
-!
-!	 !-- updating the sums over k
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 close(100)
-!	 close(101)
-!
-!  END SUBROUTINE
-!  SUBROUTINE initialise_from_file_eo_3tref(sys,st)
-!
-!    type(param), intent(in)			  	::  sys
-!	 type(state), intent(in out)	  		::  st
-!	 integer  									::  k,i,j,m
-!	 character(len=200)						::  fks_file,ps_file
-!	 real(rl)									::  f_r,f_i,h_r,h_i,p_r,q_r,p_i,q_i,a
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)	::  fks, hks
-!
-!	 print*, "Initialising from: ", parameterchar_3tref(sys)
-!	 fks_file=trim(adjustl(sys%file_path))//"/fks_fst_"//trim(adjustl(parameterchar_3tref(sys)))//".d"
-!	 ps_file=trim(adjustl(sys%file_path))//"/ps_fst_"//trim(adjustl(parameterchar_3tref(sys)))//".d"
-!	 open (unit=101,file=ps_file,action="read",status="old")
-!	 open (unit=100,file=fks_file,action="read",status="old")
-!
-!
-!	 fks = 0._rl
-!	 hks = 0._rl
-!	 do  k=-sys%nmode+1,sys%nmode
-!		read(100,'(f25.15)',advance='no') a
-!	   do i=1,st%np
-!	     read(100,'(2f25.15)',advance='no') f_r, h_r
-!	     fks(i,k) = f_r
-!	     hks(i,k) = h_r
-!	   end do
-!	   do i=1,st%np
-!	     read(100,'(2f25.15)',advance='no') f_i, h_i
-!	     fks(i,k) = fks(i,k) + Ic*f_i
-!	     hks(i,k) = hks(i,k) + Ic*h_i
-!	   end do
-!	   read(100,*)
-!	 end do
-!
-!	 do  k=1,sys%nmode
-!		st%f(:,k) = sqrt(0.5_rl)*( fks(:,k) + fks(:,-k+1) )
-!		st%h(:,k) = sqrt(0.5_rl)*( hks(:,k) + hks(:,-k+1) )
-!		st%fo(:,k) = sqrt(0.5_rl)*( fks(:,k) - fks(:,-k+1) )
-!		st%ho(:,k) = sqrt(0.5_rl)*( hks(:,k) - hks(:,-k+1) )
-!	 end do
-!
-!	 do i=1,st%np
-!		read(101,'(2f25.15)',advance='no') p_r, q_r
-!		st%p(i) = p_r
-!		st%q(i) = q_r
-!	 end do
-!	 do i=1,st%np
-!		read(101,'(2f25.15)',advance='no') p_i, q_i
-!		st%p(i) = st%p(i) + Ic*p_i
-!		st%q(i) = st%q(i) + Ic*q_i
-!	 end do
-!
-!	 st%t = sys%tmax
-!
-!	 !-- updating the sums over k
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 close(100)
-!	 close(101)
-!
-!  END SUBROUTINE
-!	 FUNCTION parameterchar_13oct(sys)
-!
-!		!-- without rand_dt
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar,inter10char,nptrefchangechar
-!		character(len=200)				:: parameterchar_13oct, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f9.4)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(rtaddchar, '(i2)') sys%rtadd
-!		write(addstylechar, '(i2)') sys%adding_style
-!		write(p0char, '(f6.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(sgnchar, '(i2)') sys%sgn
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f7.2)') sys%tref
-!		write(trefchar2, '(f6.1)') sys%tref2
-!		write(nptrefchangechar, '(I3)') sys%nptrefchange
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(aachar, '(I10)') int(1._rl/sys%A)
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(I8)') int(abs(sys%x0))
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!		write(dkrchar,'(I3)') sys%dk_ratio
-!		write(dkcchar,'(f4.2)') sys%dk_change
-!		write(inter10char,'(I1)') sys%inter
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 !"_"//trim(adjustl(tac1char))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_13oct=trim(adjustl(nmchar))//"m"//&
-!					 "_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-!	 FUNCTION parameterchar_1oct(sys)
-!
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar,inter10char,nptrefchangechar
-!		character(len=200)				:: parameterChar_1oct, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f8.3)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(p0char, '(f6.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f7.2)') sys%tref
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(I8)') int(abs(sys%x0))
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 !"_"//trim(adjustl(tac1char))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_1oct=trim(adjustl(nmchar))//"m"//&
-!					 "_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-!	 FUNCTION parameterchar_28sept(sys)
-!
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar,inter10char,nptrefchangechar
-!		character(len=200)				:: parameterChar_28sept, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f8.3)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(rtaddchar, '(i2)') sys%rtadd
-!		write(addstylechar, '(i2)') sys%adding_style
-!		write(p0char, '(f6.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(sgnchar, '(i2)') sys%sgn
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f6.1)') sys%tref
-!		write(trefchar2, '(f6.1)') sys%tref2
-!		write(nptrefchangechar, '(I3)') sys%nptrefchange
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(aachar, '(I10)') int(1._rl/sys%A)
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(f5.1)') abs(sys%x0/1000._rl)
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!		write(dkrchar,'(I3)') sys%dk_ratio
-!		write(dkcchar,'(f4.2)') sys%dk_change
-!		write(inter10char,'(I1)') sys%inter
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 !"_"//trim(adjustl(tac1char))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_28sept=trim(adjustl(nmchar))//"m"//&
-!					 "_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-!	 FUNCTION parameterchar_3tref(sys)
-!
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar,inter10char,nptrefchangechar,nptrefchangechar2
-!		character(len=200)				:: parameterChar_3tref, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f8.4)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(rtaddchar, '(i2)') sys%rtadd
-!		write(addstylechar, '(i2)') sys%adding_style
-!		write(p0char, '(f6.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(sgnchar, '(i2)') sys%sgn
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f6.1)') sys%tref
-!		write(trefchar2, '(f6.1)') sys%tref2
-!		write(trefchar3, '(f6.1)') sys%tref3
-!		write(nptrefchangechar, '(I3)') sys%nptrefchange
-!		write(nptrefchangechar2, '(I3)') sys%nptrefchange2
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(aachar, '(I10)') int(1._rl/sys%A)
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(f5.1)') abs(sys%x0/1000._rl)
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!		write(dkrchar,'(I3)') sys%dk_ratio
-!		write(dkcchar,'(f4.2)') sys%dk_change
-!		write(inter10char,'(I1)') sys%inter
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 "_"//trim(adjustl(trefchar2))//&
-!						 "_"//trim(adjustl(trefchar3))//&
-!						 "_"//trim(adjustl(nptrefchangechar))//&
-!						 "_"//trim(adjustl(nptrefchangechar2))//&
-!						 !"_"//trim(adjustl(tac1char))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_3tref=trim(adjustl(nmchar))//"m"//&
-!					 "_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-!	 FUNCTION parameterchar_no_nmode(sys)
-!
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar,inter10char,nptrefchangechar,nptrefchangechar2
-!		character(len=200)				:: parameterChar_no_nmode, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f8.4)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(rtaddchar, '(i2)') sys%rtadd
-!		write(addstylechar, '(i2)') sys%adding_style
-!		write(p0char, '(f6.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(sgnchar, '(i2)') sys%sgn
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f6.1)') sys%tref
-!		write(trefchar2, '(f6.1)') sys%tref2
-!		write(trefchar3, '(f6.1)') sys%tref3
-!		write(nptrefchangechar, '(I3)') sys%nptrefchange
-!		write(nptrefchangechar2, '(I3)') sys%nptrefchange2
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(aachar, '(I10)') int(1._rl/sys%A)
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(f5.1)') abs(sys%x0/1000._rl)
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!		write(dkrchar,'(I3)') sys%dk_ratio
-!		write(dkcchar,'(f4.2)') sys%dk_change
-!		write(inter10char,'(I1)') sys%inter
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 "_"//trim(adjustl(trefchar2))//&
-!						 "_"//trim(adjustl(trefchar3))//&
-!						 "_"//trim(adjustl(nptrefchangechar))//&
-!						 "_"//trim(adjustl(nptrefchangechar2))//&
-!						 !"_"//trim(adjustl(tac1char))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_no_nmode="_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-!	 FUNCTION parameterchar_2tref(sys)
-!
-!		type(param), intent(in)		::   sys
-!		character(len=100)      		:: delchar,alChar,npiniChar,nmChar,npaddChar,&
-!														tmaxchar,dtchar,aachar,p1ichar,sgnchar,&
-!														fstepchar, merrchar,trefchar,trefchar2,trefchar3, &
-!														p0char,wigxminchar,wigxmaxchar,tac1char,tac2char, &
-!														wmaxchar,wcchar,alchar3,k0char,nchar,rtaddchar,&
-!														x0char,prepchar,addstylechar,sigchar,dkratiochar,&
-!														dkcchar,dkrchar, inter10char, nptrefchangechar
-!		character(len=200)				:: parameterChar_2tref, addchar, scatchar, interchar
-!
-!		write(delchar, '(f6.1)') sys%del
-!		write(sigchar, '(f8.3)') sys%sigma
-!		write(alChar, '(f8.4)') sys%alpha
-!		write(alChar3, '(f6.2)') sys%alpha*3.0
-!		write(p1iChar, '(f6.2)') sys%p1i
-!		write(npinichar, '(i2)') sys%npini
-!		write(npaddchar, '(i2)') sys%npadd
-!		write(rtaddchar, '(i2)') sys%rtadd
-!		write(addstylechar, '(i2)') sys%adding_style
-!		write(p0char, '(f10.3)') sys%p0*1000._rl
-!		write(merrchar, '(f6.3)') sys%merr*1000000._rl
-!		write(sgnchar, '(i2)') sys%sgn
-!		write(nmChar, '(I5)') sys%nmode
-!		write(tmaxchar, '(I10)') int(sys%tmax)
-!		write(trefchar, '(f6.1)') sys%tref
-!		write(nptrefchangechar, '(I3)') sys%nptrefchange
-!		write(trefchar2, '(f6.1)') sys%tref2
-!		write(wigxminchar, '(I5)') int(sys%wigxmin)
-!		write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-!		write(dtchar, '(f6.4)') sys%dt
-!		write(aachar, '(I10)') int(1._rl/sys%A)
-!		write(wmaxchar, '(I4)') int(sys%wmax)
-!		write(wcchar, '(I4)') int(sys%wc)
-!		write(k0char, '(f10.4)') sys%k0
-!		write(x0char, '(f5.1)') abs(sys%x0/1000._rl)
-!		write(nchar, '(f6.2)') sys%n_wp
-!		write(prepChar, '(I2)') sys%prep
-!		write(dkrchar,'(I3)') sys%dk_ratio
-!		write(dkcchar,'(f4.2)') sys%dk_change
-!		write(inter10char,'(I1)') sys%inter
-!
-!		addchar="_"
-!		scatchar="_"
-!		interchar="_"
-!		if (sys%inter == 1) then
-!		  interchar="_dkc"//trim(adjustl(dkcchar))//&
-!						"_dkr"//trim(adjustl(dkrchar))//"_"
-!		end if
-!		if (sys%npadd .ne. 0) then
-!		  addchar="_tr"//trim(adjustl(trefchar))//&
-!						 "_"//trim(adjustl(trefchar2))//&
-!						 "_"//trim(adjustl(nptrefchangechar))//&
-!						 "_me"//trim(adjustl(merrchar))//&
-!						 "_p"//trim(adjustl(p0char))//"_"
-!		end if
-!		if ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-!		  scatchar="_k"//trim(adjustl(k0char))//&
-!					 "_x"//trim(adjustl(x0char))//&
-!					 "_sig"//trim(adjustl(sigchar))//&
-!					 "_n"//trim(adjustl(nchar))
-!		end if
-!
-!		parameterchar_2tref=trim(adjustl(nmchar))//"m"//&
-!					 "_I"//trim(adjustl(inter10char))//&
-!					 trim(adjustl(interchar))//&
-!					 "np"//trim(adjustl(npinichar))//&
-!					 "_"//trim(adjustl(npaddchar))//&
-!					 "_al"//trim(adjustl(alchar))//&
-!					 "_del"//trim(adjustl(delchar))//&
-!					 "_dt"//trim(adjustl(dtchar))//&
-!					 trim(adjustl(addchar))//&
-!					 trim(adjustl(scatchar))//&
-!					 "tmax"//trim(adjustl(tmaxchar))//&
-!					 "_p"//trim(adjustl(prepchar))
-!
-!	 END FUNCTION
-
-  !SUBROUTINE calcDerivatives_slow(sys,st) 
-
-  !  type(param), intent(in)                            		::  sys
-  !  type(state), intent(in out)	                      		::  st
-  !  complex(cx), dimension(st%np)							 		::  bigP, bigQ, v_p, v_q
-  !  complex(cx), dimension(st%np,sys%nmode)				 		::  bigF, bigH, v_f, v_h
-  !  complex(cx), dimension(st%np,st%np)              		::  M_p, M_q, M_pi, M_qi,N_p, N_q, N_pi, N_qi
-  !  complex(cx), dimension(st%np,st%np,st%np)       		::  A_p, A_q
-  !  complex(cx), dimension(st%np,st%np,st%np,sys%nmode)  ::  A_f, A_h
-  !  real(rl), dimension(2*st%np**2,2*st%np**2)   	 		::  EqMat_p, EqMat_q
-  !  real(rl), dimension(2*st%np**2)    		 			 		::  EqRhs_p, EqRhs_q, kappaVec_p, kappaVec_q
-  !  real(rl), dimension(st%np,st%np)	   				 		::  Kappa_p_r,Kappa_q_r,kappa_p_c,kappa_q_c
-  !  complex(cx), dimension(st%np,st%np)					 		::  Kappa_p,Kappa_q  !-- FINAL KAPPA MATRICES
-  !  complex(cx),dimension(st%np,sys%nmode)  			 		::  f,h,fc,hc  		
-  !  complex(cx),dimension(st%np)			   			 		::  p,q,pc,qc
-  !  complex(cx),dimension(st%np)			   			 		::  der_E_pc_save,der_E_qc_save
-  !  complex(cx),dimension(st%np,sys%nmode)			   	::  der_E_fc_save,der_E_hc_save
-  !  integer												          		::  i,j,k,l,m,cj,ii,jj,np,info,s
-  !  
-  !  complex(cx), dimension(st%np) 				          		::  tmpV1_p,tmpV1_q,tmpV2_p,tmpV2_q
-  !  complex(cx), dimension(st%np,st%np,st%np,sys%nmode) 	::  tmpA_f1,tmpA_h1,tmpA_f2,tmpA_h2
-  !  complex(cx), dimension(st%np,sys%nmode) 				   ::  tmpV1_f,tmpV1_h
-  !  complex(cx), dimension(st%np,st%np,st%np,st%np)		::  D_f,D_h
-  !  complex(cx), dimension(st%np,st%np,st%np)				::  E_f,E_h
-  !  complex(cx), dimension(st%np,st%np)						::  K_f,K_h
-
-
-  !  !-- A few shortcuts
-  !  f=st%f;h=st%h;p=st%p;q=st%q
-  !  fc=conjg(f);hc=conjg(h);pc=conjg(p);qc=conjg(q)
-  !  np = st%np
-
-  !  !- set all variables to zero
-  !  bigP = 0._cx;bigQ = 0._cx;bigF = 0._cx;bigH = 0._cx
-  !  M_p=0._cx;M_q=0._cx;N_p=0._cx;N_q=0._cx
-  !  M_pi=0._cx;M_qi=0._cx;N_pi=0._cx;N_qi=0._cx
-  !  A_p=0._cx;A_q=0._cx;A_f=0._cx;A_h=0._cx
-  !  eqMat_p=0._cx;eqMat_q=0._cx;eqrhs_p=0._cx;eqrhs_q=0._cx
-  !	 eqRhs_p = 0._cx;eqRhs_q = 0._cx
-  !  v_p=0._cx;v_q=0._cx;v_f=0._cx;v_h=0._cx
-  !  Kappa_p_r=0._cx;Kappa_q_r=0._cx;kappa_p_c=0._cx;kappa_q_c=0._cx
-  !  kappaVec_p=0._cx; kappaVec_q=0._cx;Kappa_p=0._cx;Kappa_q=0._cx
-  !  der_E_fc_save(:,:) = 0._cx
-  !  der_E_hc_save(:,:) = 0._cx
-  !  der_E_pc_save(:) = 0._cx
-  !  der_E_qc_save(:) = 0._cx
-  !  D_f = 0._cx;D_h = 0._cx
-  !  E_f = 0._cx;E_h = 0._cx
-  !  K_f = 0._cx;K_h = 0._cx
-
-  !  !==================================================
-  !  !-- STEP 1: Computation of A_p,A_q and v_p,v_q
-  !  !-- pDot(i) = sum_(j,k) [ A_p(i,j,k)*Kappa(k,j) + v_p(i) ] 
-  !  !-- qDot(i) = sum_(j,k) [ A_q(i,j,k)*Kappa(k,j) + v_q(i) ] 
-
-  !  do i=1,np
-  ! 	  bigP(i) = P_j(sys,st,i)
-  ! 	  bigQ(i) = Q_j(sys,st,i)
-  ! 	  bigF(i,:) =  F_j(sys,st,i) 
-  ! 	  bigH(i,:) =  H_j(sys,st,i) 
-  !  end do
-
-  !  !-- Matrix M: to be inverted
-  !  M_p = st%ov_ff
-  !  M_q = st%ov_hh
-
-  !  !-- perform the inversion
-  !  M_pi = M_p
-  !  M_qi = M_q
-  !  CALL invertH(M_pi,info)
-  !  CALL invertH(M_qi,info)
-
-  !  !-- Define v_p, v_q and A_p, A_q
-  !  v_p = M_pi .matprod. bigP
-  !  v_q = M_qi .matprod. bigQ
-
-  !  do i=1,size(A_p,1)
-  ! 	do j=1,size(A_p,2)
-  ! 	  do k=1,size(A_p,3)
-  ! 	    A_p(i,j,k) = 0.5_rl* M_pi(i,j) * st%ov_ff(j,k) * p(k)
-  ! 	   A_q(i,j,k) = 0.5_rl* M_qi(i,j) * st%ov_hh(j,k) * q(k)
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-
-  !  !==================================================
-  !  !-- STEP 2: Computation of A_f,A_h and v_f,v_h
-  !  !-- fDot(i) = sum_(j,k) [ A_f(i,j,k)*Kappa(k,j) ] + v_f(i)  
-  !  !-- hDot(i) = sum_(j,k) [ A_h(i,j,k)*Kappa(k,j) ] + v_h(i)  
-
-  !  do j=1,np
-  ! 	do m=1,np
-  ! 	  N_p(j,m) = p(m)*st%ov_ff(j,m)
-  ! 	  N_q(j,m) = q(m)*st%ov_hh(j,m) 
-  ! 	end do
-  !  end do
-
-  !  !-- Calculate Nij and is inverse
-  !  N_pi = N_p
-  !  N_qi = N_q
-  !  CALL invertGeneral(N_pi,info)
-  !  CALL invertGeneral(N_qi,info)
-  !  
-
-  !  !-- Computation of v_f and v_h (H_i in the notes)
-  !  tmpV1_f=0._cx
-  !  tmpV1_h=0._cx
-
-  !  !-- First term of v_f (and v_h)
-  !  tmpV1_f = bigF
-  !  tmpV1_h = bigH
-  !  !-- Second term of v_f
-  !  do s=1,sys%nmode
-  ! 	do j=1,np
-  ! 		 tmpV1_f(j,s) = tmpV1_f(j,s) &
-  ! 								 - sum( st%ov_ff(j,:)*v_p(:)*f(:,s) )
-  ! 		 tmpV1_h(j,s) = tmpV1_h(j,s) &
-  ! 								 - sum( st%ov_hh(j,:)*v_q(:)*h(:,s) )
-  ! 	end do
-  ! 	v_f(:,s) = N_pi .matprod. tmpV1_f(:,s)
-  ! 	v_h(:,s) = N_qi .matprod. tmpV1_h(:,s)
-  !  end do
-
-  !  tmpA_f1=0._cx; tmpA_h1=0._cx
-  !  tmpA_f2=0._cx; tmpA_h2=0._cx
-
-  !  !-- Defining the Betref matrices, here designated by A_f and A_h
-
-  !  do s=1,sys%nmode
-  ! 	do k=1,size(A_f,2)
-  ! 	  do j=1,size(A_f,3)
-
-  ! 		 do i=1,size(A_f,1)
-  ! 			tmpA_f1(i,j,k,s) = 0.5_rl* N_pi(i,j) * p(k)*f(k,s) * st%ov_ff(j,k)
-  ! 			tmpA_h1(i,j,k,s) = 0.5_rl* N_qi(i,j) * q(k)*h(k,s) * st%ov_hh(j,k)
-  ! 		 end do
-
-  ! 		 do l=1,np
-  ! 			  tmpA_f2(l,j,k,s) = tmpA_f2(l,j,k,s) & 
-  ! 						 - sum( A_p(:,j,k)*f(:,s)*st%ov_ff(l,:) )
-  ! 			  tmpA_h2(l,j,k,s) = tmpA_h2(l,j,k,s) &
-  ! 					 - sum( A_q(:,j,k)*h(:,s)*st%ov_hh(l,:) )
-  ! 		 end do
-
-  ! 	  end do
-  ! 	
-
-  ! 	  A_f(:,:,k,s) = tmpA_f1(:,:,k,s) + ( N_pi .matprod. tmpA_f2(:,:,k,s) )
-  ! 	  A_h(:,:,k,s) = tmpA_h1(:,:,k,s) + ( N_qi .matprod. tmpA_h2(:,:,k,s) )
-
-  ! 	end do
-  !  end do
-
-  !  !==================================================
-  !  !-- STEP 3: Solve the system of equations for Kappa
-  !  !-- Define Q_ij, a 2*np**2 matrix: j in [1,np**2] correpsonds to Re(kappa)
-  !  !--    while j in [1+np**2,2*np**2] corresponds to Im(Kappa)
-
-  !  cj = st%np**2   !-- a shortcut to get to the imagainary part of kappaVec
-
-  !  do i=1,st%np
-  ! 	do j=1,st%np
-  ! 	  K_f(i,j) = sum( conjg(f(i,:))*v_f(i,:) + f(i,:)*conjg(v_f(i,:)) - 2._rl*conjg(f(j,:))*v_f(i,:) )
-  ! 	  K_h(i,j) = sum( conjg(h(i,:))*v_h(i,:) + h(i,:)*conjg(v_h(i,:)) - 2._rl*conjg(h(j,:))*v_h(i,:) )
-  ! 	  do k=1,st%np
-  ! 		 E_f(i,j,k) = sum( f(i,:)*conjg(A_f(i,j,k,:))  )
-  ! 		 E_h(i,j,k) = sum( h(i,:)*conjg(A_h(i,j,k,:))  )
-  ! 		 do m=1,st%np
-  ! 			D_f(i,m,j,k) = sum( (conjg(f(i,:)) - 2._rl*conjg(f(m,:)))*A_f(i,j,k,:) )
-  ! 			D_h(i,m,j,k) = sum( (conjg(h(i,:)) - 2._rl*conjg(h(m,:)))*A_h(i,j,k,:) )
-  ! 		 end do
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-
-  !  do i=1, np
-  ! 	do m=1, np
-
-  ! 	  ii = np*(i-1)+m
-
-  ! 	  eqRhs_p(ii) 	  =  real( K_f(i,m) )
-  ! 	  eqRhs_q(ii) 	  =  real( K_h(i,m) )
-  ! 	  eqRhs_p(ii+cj)  =  aimag( K_f(i,m) )
-  ! 	  eqRhs_q(ii+cj)  =  aimag( K_h(i,m) )
-
-  ! 	  do j=1, np
-  ! 		 do k=1, np
-
-  ! 		   jj = np*(k-1) + j
-
-  ! 				 eqMat_p(ii,jj) = kroneckerDelta(ii,jj) - real(  D_f(i,m,j,k) + E_f(i,j,k) )
-  ! 				 eqMat_p(ii,jj+cj) = kroneckerDelta(ii,jj+cj) + aimag(  D_f(i,m,j,k) - E_f(i,j,k) )
-  ! 				 eqMat_p(ii+cj,jj) = kroneckerDelta(ii+cj,jj) - aimag(  D_f(i,m,j,k) + E_f(i,j,k) )
-  ! 				 eqMat_p(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) - real(  D_f(i,m,j,k) - E_f(i,j,k) )
-
-  ! 				 eqMat_q(ii,jj) = kroneckerDelta(ii,jj) - real(  D_h(i,m,j,k) + E_h(i,j,k) )
-  ! 				 eqMat_q(ii,jj+cj) = kroneckerDelta(ii,jj+cj) + aimag(  D_h(i,m,j,k) - E_h(i,j,k) )
-  ! 				 eqMat_q(ii+cj,jj) = kroneckerDelta(ii+cj,jj) - aimag(  D_h(i,m,j,k) + E_h(i,j,k) )
-  ! 				 eqMat_q(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) - real(  D_h(i,m,j,k) - E_h(i,j,k) )
-
-  ! 		 end do
-  ! 	  end do
-  ! 	end do
-  !  end do
-
-
-  !  !-- Apply the Lapack algorithm to solve the real system of equations
-  !  !-- the solution replaces the 2nd argument
-  !  kappaVec_p = eqRhs_p
-  !  CALL solveEq_r(eqMat_p,kappaVec_p)
-  !  kappaVec_q = eqRhs_q
-  !  CALL solveEq_r(eqMat_q,kappaVec_q)
-
-
-  !  ! Convert the matrices to np*np matrix
-  !  kappa_p_r = transpose(reshape(kappaVec_p(1:np**2),(/np,np/)) )
-  !  kappa_p_c = transpose(reshape(kappaVec_p(1+np**2:2*np**2),(/np,np/)) )
-  !  kappa_q_r = transpose(reshape(kappaVec_q(1:np**2),(/np,np/)) )
-  !  kappa_q_c = transpose(reshape(kappaVec_q(1+np**2:2*np**2),(/np,np/)) )
-
-  !  kappa_p = kappa_p_r + Ic * kappa_p_c
-  !  kappa_q = kappa_q_r + Ic * kappa_q_c
-
-  !  !-- Compute the pdots and qdots
-  !  !-- pdot(i) = sum_j,k 0.5*M_pi(i,j)*ov(f(j),f(k))*p(k)*Kappa_p(k,j) + v_p(i)
-
-  !  tmpV1_p=0._rl;tmpV2_p=0._rl
-  !  tmpV1_q=0._rl;tmpV2_q=0._rl
-  !  do j=1,np
-  ! 	  tmpV1_p(j)=tmpV1_p(j) + 0.5_rl*sum( p(:)*st%ov_ff(j,:)*Kappa_p(:,j) )
-  ! 	  tmpV1_q(j)=tmpV1_q(j) + 0.5_rl*sum( q(:)*st%ov_hh(j,:)*Kappa_q(:,j) )
-  !  end do
-
-  !  tmpV2_p = M_pi .matprod. tmpV1_p
-  !  tmpV2_q = M_qi .matprod. tmpV1_q
-
-  !  st%pdot = tmpV2_p + v_p
-  !  st%qdot = tmpV2_q + v_q
-
-
-  !  !-- Compute the fdots and hdots
-  !  !-- fdot(i) = sum_j,k [ -N_pi(i,j)*p(k)*Kappa_p(k,j)*pc(j)*f(k)*ov(f(j),f(k)) 
-  !  !								+ sum_l,m [ -N_pi(i,l)*A_p(m,j,k)*Kappa_p(k,j)*pc(l)f(m)*ov(f(l),f(m)) ] ] + v_f(i)
-  !  tmpV1_f=0._cx
-  !  tmpV1_h=0._cx
-
-  !  do s=1, sys%nmode
-  ! 	do i=1,np
-  ! 	  do j=1,np
-  ! 			tmpV1_f(i,s) = tmpV1_f(i,s) + sum( A_f(i,j,:,s) * Kappa_p(:,j) )
-  ! 			tmpV1_h(i,s) = tmpV1_h(i,s) + sum( A_h(i,j,:,s) * Kappa_q(:,j) )
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-  !  st%fdot = tmpV1_f + v_f
-  !  st%hdot = tmpV1_h + v_h
-
-  !END SUBROUTINE calcDerivatives_slow
-  !SUBROUTINE calcDerivatives_symmetric(sys,st) 
-
-  !  type(param), intent(in)                            		::  sys
-  !  type(state), intent(in out)	                      		::  st
-  !  complex(cx), dimension(st%np)							 		::  bigP, bigQ, v_p, v_q
-  !  complex(cx), dimension(st%np,sys%nmode)				 		::  bigF, bigH, v_f, v_h
-  !  complex(cx), dimension(st%np,st%np)              		::  M_p, M_q, M_pi, M_qi,N_p, N_q, N_pi, N_qi
-  !  complex(cx), dimension(st%np,st%np,st%np)       		::  A_p, A_q
-  !  complex(cx), dimension(st%np,st%np,st%np,sys%nmode)  ::  A_f, A_h
-  !  real(rl), dimension(2*st%np**2,2*st%np**2)   	 		::  EqMat_p, EqMat_q
-  !  real(rl), dimension(2*st%np**2)    		 			 		::  EqRhs_p, EqRhs_q, kappaVec_p, kappaVec_q
-  !  real(rl), dimension(st%np,st%np)	   				 		::  Kappa_p_r,Kappa_q_r,kappa_p_c,kappa_q_c
-  !  complex(cx), dimension(st%np,st%np)					 		::  Kappa_p,Kappa_q  !-- FINAL KAPPA MATRICES
-  !  complex(cx),dimension(st%np,sys%nmode)  			 		::  f,h,fc,hc  		
-  !  complex(cx),dimension(st%np)			   			 		::  p,q,pc,qc
-  !  complex(cx),dimension(st%np)			   			 		::  der_E_pc_save,der_E_qc_save
-  !  complex(cx),dimension(st%np,sys%nmode)			   	::  der_E_fc_save,der_E_hc_save
-  !  integer												          		::  i,j,k,l,m,cj,ii,jj,np,info,s
-  !  
-  !  complex(cx), dimension(st%np) 				          		::  tmpV1_p,tmpV1_q,tmpV2_p,tmpV2_q
-  !  complex(cx), dimension(st%np,st%np,st%np,sys%nmode) 	::  tmpA_f1,tmpA_h1,tmpA_f2,tmpA_h2
-  !  complex(cx), dimension(st%np,sys%nmode) 				   ::  tmpV1_f,tmpV1_h
-  !  complex(cx), dimension(st%np,st%np,st%np,st%np)		::  D_f,D_h
-  !  complex(cx), dimension(st%np,st%np,st%np)				::  E_f,E_h
-  !  complex(cx), dimension(st%np,st%np)						::  K_f,K_h
-
-
-  !  !-- A few shortcuts
-  !  f=st%f;h=st%h;p=st%p;q=st%q
-  !  fc=conjg(f);hc=conjg(h);pc=conjg(p);qc=conjg(q)
-  !  np = st%np
-
-  !  !- set all variables to zero
-  !  bigP = 0._cx;bigQ = 0._cx;bigF = 0._cx;bigH = 0._cx
-  !  M_p=0._cx;M_q=0._cx;N_p=0._cx;N_q=0._cx
-  !  M_pi=0._cx;M_qi=0._cx;N_pi=0._cx;N_qi=0._cx
-  !  A_p=0._cx;A_q=0._cx;A_f=0._cx;A_h=0._cx
-  !  eqMat_p=0._cx;eqMat_q=0._cx;eqrhs_p=0._cx;eqrhs_q=0._cx
-  !	 eqRhs_p = 0._cx;eqRhs_q = 0._cx
-  !  v_p=0._cx;v_q=0._cx;v_f=0._cx;v_h=0._cx
-  !  Kappa_p_r=0._cx;Kappa_q_r=0._cx;kappa_p_c=0._cx;kappa_q_c=0._cx
-  !  kappaVec_p=0._cx; kappaVec_q=0._cx;Kappa_p=0._cx;Kappa_q=0._cx
-  !  der_E_fc_save(:,:) = 0._cx
-  !  der_E_hc_save(:,:) = 0._cx
-  !  der_E_pc_save(:) = 0._cx
-  !  der_E_qc_save(:) = 0._cx
-  !  D_f = 0._cx;D_h = 0._cx
-  !  E_f = 0._cx;E_h = 0._cx
-  !  K_f = 0._cx;K_h = 0._cx
-
-  !  !==================================================
-  !  !-- STEP 1: Computation of A_p,A_q and v_p,v_q
-  !  !-- pDot(i) = sum_(j,k) [ A_p(i,j,k)*Kappa(k,j) + v_p(i) ] 
-  !  !-- qDot(i) = sum_(j,k) [ A_q(i,j,k)*Kappa(k,j) + v_q(i) ] 
-
-  !  do i=1,np
-  ! 	  bigP(i) = P_j(sys,st,i)
-  ! 	  bigQ(i) = Q_j(sys,st,i)
-  ! 	  bigF(i,:) =  F_j(sys,st,i) 
-  ! 	  bigH(i,:) =  H_j(sys,st,i) 
-  !  end do
-
-  !  !-- Matrix M: to be inverted
-  !  M_p = st%ov_ff
-  !  !M_q = st%ov_hh
-
-  !  !-- perform the inversion
-  !  M_pi = M_p
-  !  !M_qi = M_q
-  !  CALL invertH(M_pi,info)
-  !  !CALL invertH(M_qi,info)
-
-  !  !-- Define v_p, v_q and A_p, A_q
-  !  v_p = M_pi .matprod. bigP
-  !  !v_q = M_qi .matprod. bigQ
-
-  !  do i=1,size(A_p,1)
-  ! 	do j=1,size(A_p,2)
-  ! 	  do k=1,size(A_p,3)
-  ! 	    A_p(i,j,k) = 0.5_rl* M_pi(i,j) * st%ov_ff(j,k) * p(k)
-  ! 		 !A_q(i,j,k) = 0.5_rl* M_qi(i,j) * st%ov_hh(j,k) * q(k)
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-
-  !  !==================================================
-  !  !-- STEP 2: Computation of A_f,A_h and v_f,v_h
-  !  !-- fDot(i) = sum_(j,k) [ A_f(i,j,k)*Kappa(k,j) ] + v_f(i)  
-  !  !-- hDot(i) = sum_(j,k) [ A_h(i,j,k)*Kappa(k,j) ] + v_h(i)  
-
-  !  do j=1,np
-  ! 	do m=1,np
-  ! 	  N_p(j,m) = p(m)*st%ov_ff(j,m)
-  ! 	  !N_q(j,m) = q(m)*st%ov_hh(j,m) 
-  ! 	end do
-  !  end do
-
-  !  !-- Calculate Nij and is inverse
-  !  N_pi = N_p
-  !  !N_qi = N_q
-  !  CALL invertGeneral(N_pi,info)
-  !  !CALL invertGeneral(N_qi,info)
-  !  
-
-  !  !-- Computation of v_f and v_h (H_i in the notes)
-  !  tmpV1_f=0._cx
-  !  tmpV1_h=0._cx
-
-  !  !-- First term of v_f (and v_h)
-  !  tmpV1_f = bigF
-  !  tmpV1_h = bigH
-  !  !-- Second term of v_f
-  !  do s=1,sys%nmode
-  ! 	do j=1,np
-  ! 		 tmpV1_f(j,s) = tmpV1_f(j,s) &
-  ! 								 - sum( st%ov_ff(j,:)*v_p(:)*f(:,s) )
-  ! 		! tmpV1_h(j,s) = tmpV1_h(j,s) &
-  ! 		!						 - sum( st%ov_hh(j,:)*v_q(:)*h(:,s) )
-  ! 	end do
-  ! 	v_f(:,s) = N_pi .matprod. tmpV1_f(:,s)
-  ! 	!v_h(:,s) = N_qi .matprod. tmpV1_h(:,s)
-  !  end do
-
-  !  tmpA_f1=0._cx; tmpA_h1=0._cx
-  !  tmpA_f2=0._cx; tmpA_h2=0._cx
-
-  !  !-- Defining the Betref matrices, here designated by A_f and A_h
-
-  !  do s=1,sys%nmode
-  ! 	do k=1,size(A_f,2)
-  ! 	  do j=1,size(A_f,3)
-
-  ! 		 do i=1,size(A_f,1)
-  ! 			tmpA_f1(i,j,k,s) = 0.5_rl* N_pi(i,j) * p(k)*f(k,s) * st%ov_ff(j,k)
-  ! 	!		tmpA_h1(i,j,k,s) = 0.5_rl* N_qi(i,j) * q(k)*h(k,s) * st%ov_hh(j,k)
-  ! 		 end do
-
-  ! 		 do l=1,np
-  ! 			  tmpA_f2(l,j,k,s) = tmpA_f2(l,j,k,s) & 
-  ! 						 - sum( A_p(:,j,k)*f(:,s)*st%ov_ff(l,:) )
-  ! 	!		  tmpA_h2(l,j,k,s) = tmpA_h2(l,j,k,s) &
-  ! 	!				 - sum( A_q(:,j,k)*h(:,s)*st%ov_hh(l,:) )
-  ! 		 end do
-
-  ! 	  end do
-  ! 	
-
-  ! 	  A_f(:,:,k,s) = tmpA_f1(:,:,k,s) + ( N_pi .matprod. tmpA_f2(:,:,k,s) )
-  ! 	!  A_h(:,:,k,s) = tmpA_h1(:,:,k,s) + ( N_qi .matprod. tmpA_h2(:,:,k,s) )
-
-  ! 	end do
-  !  end do
-
-  !  !==================================================
-  !  !-- STEP 3: Solve the system of equations for Kappa
-  !  !-- Define Q_ij, a 2*np**2 matrix: j in [1,np**2] correpsonds to Re(kappa)
-  !  !--    while j in [1+np**2,2*np**2] corresponds to Im(Kappa)
-
-  !  cj = st%np**2   !-- a shortcut to get to the imagainary part of kappaVec
-
-  !  do i=1,st%np
-  ! 	do j=1,st%np
-  ! 	  K_f(i,j) = sum( conjg(f(i,:))*v_f(i,:) + f(i,:)*conjg(v_f(i,:)) - 2._rl*conjg(f(j,:))*v_f(i,:) )
-  ! 	  !K_h(i,j) = sum( conjg(h(i,:))*v_h(i,:) + h(i,:)*conjg(v_h(i,:)) - 2._rl*conjg(h(j,:))*v_h(i,:) )
-  ! 	  do k=1,st%np
-  ! 		 E_f(i,j,k) = sum( f(i,:)*conjg(A_f(i,j,k,:))  )
-  ! 		 !E_h(i,j,k) = sum( h(i,:)*conjg(A_h(i,j,k,:))  )
-  ! 		 do m=1,st%np
-  ! 			D_f(i,m,j,k) = sum( (conjg(f(i,:)) - 2._rl*conjg(f(m,:)))*A_f(i,j,k,:) )
-  ! 			!D_h(i,m,j,k) = sum( (conjg(h(i,:)) - 2._rl*conjg(h(m,:)))*A_h(i,j,k,:) )
-  ! 		 end do
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-
-  !  do i=1, np
-  ! 	do m=1, np
-
-  ! 	  ii = np*(i-1)+m
-
-  ! 	  eqRhs_p(ii) 	  =  real( K_f(i,m) )
-  ! 	  !eqRhs_q(ii) 	  =  real( K_h(i,m) )
-  ! 	  eqRhs_p(ii+cj)  =  aimag( K_f(i,m) )
-  ! 	  !eqRhs_q(ii+cj)  =  aimag( K_h(i,m) )
-
-  ! 	  do j=1, np
-  ! 		 do k=1, np
-
-  ! 		   jj = np*(k-1) + j
-
-  ! 				 eqMat_p(ii,jj) = kroneckerDelta(ii,jj) - real(  D_f(i,m,j,k) + E_f(i,j,k) )
-  ! 				 eqMat_p(ii,jj+cj) = kroneckerDelta(ii,jj+cj) + aimag(  D_f(i,m,j,k) - E_f(i,j,k) )
-  ! 				 eqMat_p(ii+cj,jj) = kroneckerDelta(ii+cj,jj) - aimag(  D_f(i,m,j,k) + E_f(i,j,k) )
-  ! 				 eqMat_p(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) - real(  D_f(i,m,j,k) - E_f(i,j,k) )
-
-  ! 		!		 eqMat_q(ii,jj) = kroneckerDelta(ii,jj) - real(  D_h(i,m,j,k) + E_h(i,j,k) )
-  ! 		!		 eqMat_q(ii,jj+cj) = kroneckerDelta(ii,jj+cj) + aimag(  D_h(i,m,j,k) - E_h(i,j,k) )
-  ! 		!		 eqMat_q(ii+cj,jj) = kroneckerDelta(ii+cj,jj) - aimag(  D_h(i,m,j,k) + E_h(i,j,k) )
-  ! 		!		 eqMat_q(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) - real(  D_h(i,m,j,k) - E_h(i,j,k) )
-
-  ! 		 end do
-  ! 	  end do
-  ! 	end do
-  !  end do
-
-
-  !  !-- Apply the Lapack algorithm to solve the real system of equations
-  !  !-- the solution replaces the 2nd argument
-  !  kappaVec_p = eqRhs_p
-  !  CALL solveEq_r(eqMat_p,kappaVec_p)
-  !  !kappaVec_q = eqRhs_q
-  !  !CALL solveEq_r(eqMat_q,kappaVec_q)
-
-
-  !  ! Convert the matrices to np*np matrix
-  !  kappa_p_r = transpose(reshape(kappaVec_p(1:np**2),(/np,np/)) )
-  !  kappa_p_c = transpose(reshape(kappaVec_p(1+np**2:2*np**2),(/np,np/)) )
-  !  !kappa_q_r = transpose(reshape(kappaVec_q(1:np**2),(/np,np/)) )
-  !  !kappa_q_c = transpose(reshape(kappaVec_q(1+np**2:2*np**2),(/np,np/)) )
-
-  !  kappa_p = kappa_p_r + Ic * kappa_p_c
-  !  !kappa_q = kappa_q_r + Ic * kappa_q_c
-
-  !  !-- Compute the pdots and qdots
-  !  !-- pdot(i) = sum_j,k 0.5*M_pi(i,j)*ov(f(j),f(k))*p(k)*Kappa_p(k,j) + v_p(i)
-
-  !  tmpV1_p=0._rl;tmpV2_p=0._rl
-  !  !tmpV1_q=0_rl;tmpV2_q=0_rl
-  !  do j=1,np
-  ! 	  tmpV1_p(j)=tmpV1_p(j) + 0.5_rl*sum( p(:)*st%ov_ff(j,:)*Kappa_p(:,j) )
-  ! !	  tmpV1_q(j)=tmpV1_q(j) + 0.5_rl*sum( q(:)*st%ov_hh(j,:)*Kappa_q(:,j) )
-  !  end do
-
-  !  tmpV2_p = M_pi .matprod. tmpV1_p
-  !  !tmpV2_q = M_qi .matprod. tmpV1_q
-
-  !  st%pdot = tmpV2_p + v_p
-  !  !st%qdot = tmpV2_q + v_q
-  !  st%qdot = st%pdot
-
-
-  !  !-- Compute the fdots and hdots
-  !  !-- fdot(i) = sum_j,k [ -N_pi(i,j)*p(k)*Kappa_p(k,j)*pc(j)*f(k)*ov(f(j),f(k)) 
-  !  !								+ sum_l,m [ -N_pi(i,l)*A_p(m,j,k)*Kappa_p(k,j)*pc(l)f(m)*ov(f(l),f(m)) ] ] + v_f(i)
-  !  tmpV1_f=0._cx
-  !  !tmpV1_h=0_cx
-
-  !  do s=1, sys%nmode
-  ! 	do i=1,np
-  ! 	  do j=1,np
-  ! 			tmpV1_f(i,s) = tmpV1_f(i,s) + sum( A_f(i,j,:,s) * Kappa_p(:,j) )
-  ! !			tmpV1_h(i,s) = tmpV1_h(i,s) + sum( A_h(i,j,:,s) * Kappa_q(:,j) )
-  ! 	  end do
-  ! 	end do
-  !  end do
-  !  
-  !  st%fdot = tmpV1_f + v_f
-  !  !st%hdot = tmpV1_h + v_h
-  !  st%hdot = - st%fdot
-
-  !END SUBROUTINE
-
-  !FUNCTION f_nx_eo_lowk(sys,st)
-
-  !  type(param),intent(in)   	::  sys
-  !  type(state),intent(in)    ::  st
-  !  real(rl)				 	   ::  x
-  !  integer 						::  n,i,kmin,kmax
-  !  complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode)  ::  f_nx_eo_lowk
-
-  !  kmin = int( (-sys%nmode+1)/10._rl )
-  !  kmax = int( sys%nmode/10._rl )
-
-  !  do n=1,st%np
-  ! 	do i=-sys%nmode+1,sys%nmode
-  ! 	  x = sys%dx * (i-0.5_rl)
-  ! 	  f_nx_eo_lowk(n,i) = sqrt(0.5_rl/(2._rl*pi)) * sqrt(sys%dx) &
-  ! 				 * SUM( sqrt(sys%dk(1)) * (st%f(n,kmin:kmax)+st%fo(n,kmin:kmax)) * exp( Ic*sys%w(kmin:kmax)*x ) &
-  ! 							+ sqrt(sys%dk(1)) * (st%f(n,kmin:kmax)-st%fo(n,kmin:kmax)) * exp( -Ic*sys%w(kmin:kmax)*x ) )
-  ! 	end do
-  !  end do
-
-  !END FUNCTION
-!  FUNCTION transmission_n(sys,st,initial_st)
-!
-!	 type(param),intent(in) 					 ::  sys
-!	 type(state),intent(in)						 ::  st, initial_st
-!	 type(state)									 ::  upst,upst_ini
-!	 real(rl)										 ::  transmission_n
-!	 real(rl)										 ::  t_output,input
-!	 complex(cx),dimension(st%np,sys%nmode) ::  zpk,zpk_ini
-!	 complex(cx)					  				 ::  sum_k, tmp
-!	 integer							 				 ::  n,m
-!
-!	 upst = st
-!	 upst_ini = initial_st !	 upst%q(:) = 0._cx
-!	 upst_ini%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 CALL normalise(upst_ini)
-!
-!	 zpk_ini = sqrt(0.5_rl) * ( upst_ini%f + upst_ini%fo ) 
-!	 zpk = sqrt(0.5_rl) * ( upst%f + upst%fo )
-!
-!	 tmp = 0._cx
-!	 do n=1, upst_ini%np
-!		do m=1, upst_ini%np
-!		  sum_k = sum( conjg(zpk_ini(n,:))*zpk_ini(m,:) )
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 input = real(tmp)
-!
-!	 tmp = 0._cx
-!	 do n=1, upst%np
-!		do m=1,upst%np
-!		  sum_k = sum( conjg(zpk(n,:))*zpk(m,:) ) 
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 t_output = real(tmp)
-!
-!	 transmission_n = t_output/input
-!
-!  END FUNCTION
-!  FUNCTION reflection_n(sys,st,initial_st)
-!
-!	 type(param),intent(in) 					 ::  sys
-!	 type(state),intent(in)						 ::  st, initial_st
-!	 type(state)									 ::  upst,upst_ini
-!	 real(rl)										 ::  reflection_n
-!	 real(rl)										 ::  r_output,input
-!	 complex(cx),dimension(st%np,sys%nmode) ::  zmk,zmk_ini
-!	 complex(cx)					  				 ::  sum_k, tmp
-!	 integer							 				 ::  n,m
-!
-!	 upst = st
-!	 upst_ini = initial_st
-!	 upst%q(:) = 0._cx
-!	 upst_ini%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 CALL normalise(upst_ini)
-!
-!	 zmk_ini = sqrt(0.5_rl) * ( upst_ini%f + upst_ini%fo ) 
-!	 zmk = sqrt(0.5_rl) * ( upst%f - upst%fo )
-!
-!	 tmp = 0._cx
-!	 do n=1, upst_ini%np
-!		do m=1, upst_ini%np
-!		  sum_k = sum( conjg(zmk_ini(n,:))*zmk_ini(m,:) )
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 input = real(tmp)
-!
-!	 tmp = 0._cx
-!	 do n=1, upst%np
-!		do m=1,upst%np
-!		  sum_k = sum( conjg(zmk(n,:))*zmk(m,:) ) 
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 r_output = real(tmp)
-!
-!	 reflection_n = r_output/input
-!
-!  END FUNCTION
-!  SUBROUTINE reflection_n_routine(sys,st,initial_st)
-!
-!	 type(param),intent(in) 					 ::  sys
-!	 type(state),intent(in)						 ::  st, initial_st
-!	 type(state)									 ::  upst,upst_ini
-!	 real(rl)										 ::  r_output,input
-!	 complex(cx),dimension(st%np,sys%nmode) ::  zmk,zmk_ini
-!	 complex(cx)					  				 ::  sum_k, tmp
-!	 integer							 				 ::  n,m
-!
-!	 print*,"0"
-!	 upst = st
-!	 print*,"01"
-!	 upst_ini = initial_st
-!	 print*,"02"
-!	 upst%q(:) = 0._cx
-!	 print*,"03"
-!	 upst_ini%q(:) = 0._cx
-!	 print*,"1"
-!	 CALL normalise(upst)
-!	 CALL normalise(upst_ini)
-!
-!	 print*,"2"
-!	 zmk_ini = sqrt(0.5_rl) * ( upst_ini%f + upst_ini%fo ) 
-!	 zmk = sqrt(0.5_rl) * ( upst%f - upst%fo )
-!
-!	 print*,"3"
-!	 tmp = 0._cx
-!	 do n=1, upst_ini%np
-!		do m=1, upst_ini%np
-!		  sum_k = sum( conjg(zmk_ini(n,:))*zmk_ini(m,:) )
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 input = real(tmp)
-!
-!	 print*,"4"
-!	 tmp = 0._cx
-!	 do n=1, upst%np
-!		do m=1,upst%np
-!		  sum_k = sum( conjg(zmk(n,:))*zmk(m,:) ) 
-!		  tmp = tmp + sum_k*conjg(upst%p(n))*upst%p(m)*upst%ov_ff(n,m)
-!		end do
-!	 end do
-!	 r_output = real(tmp)
-!	 print*,"5"
-!
-!	 !reflection_n = r_output/input
-!
-!	 END SUBROUTINE
-!  FUNCTION fo_nx(sys,st)
-!
-!	 type(param),intent(in)   						::  sys
-!	 type(state),intent(in)    					::  st
-!	 real(rl)				 	   					::  x
-!	 complex(cx), dimension(st%np,sys%nmode)  ::  fo_nx
-!	 integer												::  n,i
-!
-!	 do n=1,st%np
-!		do i=1,sys%nmode
-!		  x = sys%dx * (i-1)
-!		  fo_nx(n,i) = ( 2.0/sqrt(2._rl*pi) )*sqrt(sys%dx)*sqrt(sys%dk) &
-!		  * SUM( st%fo(n,:) * cos( sys%w(:)*x )  )
-!		end do
-!		fo_nx(n,1) = fo_nx(n,1)/sqrt(2._rl)
-!	 end do
-!
-!  END FUNCTION
-!  FUNCTION ho_nx(sys,st)
-!
-!	 type(param),intent(in)   						::  sys
-!	 type(state),intent(in)    					::  st
-!	 real(rl)				 	   					::  x
-!	 complex(cx), dimension(st%np,sys%nmode)  ::  ho_nx
-!	 integer												::  n,i
-!
-!	 do n=1,st%np
-!		do i=1,sys%nmode
-!		  x = sys%dx * (i-1)
-!		  ho_nx(n,i) = ( 2.0/sqrt(2._rl*pi) )*sqrt(sys%dx)*sqrt(sys%dk) &
-!		  * SUM( st%ho(n,:) * cos( sys%w(:)*x )  )
-!		end do
-!		ho_nx(n,1) = ho_nx(n,1)/sqrt(2._rl)
-!	 end do
-!
-!  END FUNCTION
-
-!  FUNCTION fks(sys,st,xmin,xmax,xmin2,xmax2)
-!
-!	 type(param),intent(in)				::  sys
-!	 type(state),intent(in)				::  st
-!	 real(rl), intent(in)				::  xmin, xmax, xmin2, xmax2
-!	 complex(cx), dimension(st%np,-sys%nmode+1:sys%nmode-1)  ::  fnx
-!	 complex(cx), dimension(st%np,sys%nmode)  ::  fks
-!	 real(rl)							  	::  xx(-sys%nmode+1:sys%nmode-1)
-!	 integer									::  k,n,i
-!
-!	 fnx(:,:int(xmin/sys%dx)) = 0._rl
-!	 fnx(:,int(xmax/sys%dx):int(xmin2/sys%dx)) = 0._rl
-!	 fnx(:,int(xmax2/sys%dx):) = 0._rl
-!
-!	 do i=-sys%nmode+1,sys%nmode-1
-!	 	xx(i) = sys%dx * i
-!	 end do
-!
-!	 do n=1,st%np
-!		do k=1,sys%nmode
-!		  fks(n,k) = sys%dx*sqrt(1._rl/(2._rl*pi))*sum( fnx(n,:)*exp( -Ic*sys%w(k)*xx(:) ) )
-!		end do
-!	 end do
-!	 
-!
-!  END FUNCTION
-!
-!!
-!  FUNCTION zx(sys, sigma, k0 , x0, nb) result(zkout)
-!
-!!--  this function calculates: zx^e = z_x + z_-x
-!
-!	 type(param),intent(in) 	::  sys
-!	 real(rl), intent(in) 		::  sigma, k0, x0, nb
-!	 complex(cx)          		::  zkout(-sys%nmode+1:sys%nmode-1)
-!
-!	 complex(cx)   ::  prefac
-!	 real(rl)      ::  x
-!	 integer       ::  i
-!
-!	 prefac = 0._rl
-!	 prefac  = sqrt(nb)*((2._rl*sigma**2/pi)**0.25_rl)*exp(+Ic*0.5_rl*k0*x0)
-!	 zkout = 0._rl
-!
-!	 do i= -sys%nmode+1, sys%nmode-1
-!
-!		x = dble(i)*sys%dx
-!		zkout(i) = prefac * ( exp(Ic*(x-x0)*k0) * exp( - sigma**2 * (x-x0)**2 ) )
-!
-!	 end do
-!
-!  END FUNCTION
-!
-
-
-
-
-
-
-
-
-
-
-
-
-!  FUNCTION aDag2_up(sys,st,x)
-!
-!	 type(param), intent(in)  :: sys
-!	 type(state), intent(in)  ::  st
-!	 real(rl), intent(in)	  ::  x
-!	 complex(cx)				  ::  aDag2_up
-!	 complex(cx)				  ::  tmp
-!	 type(state)				  ::  upst
-!	 integer 					  ::  n,m
-!	 
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!
-!	 tmp = 0._cx
-!	 do n=1,size(st%p,1)
-!		do m=1,size(st%p,1)
-!		  tmp = tmp + conjg(upst%p(m))*upst%p(n) * conjg(fn_x(sys,upst,m,x))**2 * upst%ov_ff(m,n)
-!		end do	
-!	 end do
-!
-!	 aDag2_up = tmp
-
-
-
-
-
-!  SUBROUTINE isolateGroundState(sys,st)
-!
-!	 type(param), intent(in)						::  sys
-!	 type(state), intent(in out)					::  st
-!	 type(state)										::  gs
-!	 integer												::  i,l,j
-!	 real(rl)											::  x,k
-!	 real(rl)											::  lengthToKeep
-!	 integer												::  sitesToKeep
-!
-!	 lengthToKeep = 3._rl
-!	 sitesToKeep = int(lengthToKeep/sys%dx)+1
-!
-!	 gs=st
-!	 gs%f(:,:) = 0._cx
-!	 gs%h(:,:) = 0._cx
-!
-!	 do i=1, st%np
-!		siteDo2: do l=1, sitesToKeep
-!		  x = (sys%length/sys%nmode) * (l-1)
-!		  if ( real(fn_x(sys,st,i,x )) < 0 ) then
-!			 if (sitesToKeep > l-1 ) then
-!				sitesToKeep = l-1
-!			 end if
-!			 exit siteDo2
-!		  end if
-!		end do siteDo2
-!	 end do
-!
-!	 sitestokeep = int(sys%nmode*(0.25_rl))
-!	 do i=1, st%np
-!		do l=1, sitestokeep
-!		  x = (sys%length/sys%nmode) * (l-1)
-!		  gs%f(i,:) = gs%f(i,:) + fn_x(sys,st,i,x)*exp( - Ic*sys%w(:)*2_rl*PI*x ) * sqrt(1/(sys%nmode*sys%wmax))
-!		  gs%h(i,:) = gs%h(i,:) + hn_x(sys,st,i,x)*exp( - Ic*sys%w(:)*2_rl*PI*x ) * sqrt(1/(sys%nmode*sys%wmax)) 
-!		end do
-!	 end do
-!
-!	 CALL update_sums(sys,gs)
-!	 CALL normalise(gs)
-!
-!	 st = gs
-!
-!  END SUBROUTINE
-  !-- VARIANTS FOR ROUTINES
-  !-- a routine to caluclate the derivatives using manual summations (no SUM)
-!
-! SUBROUTINE calcDerivatives_manualsum(sys,st) 
-!
-!	 type(param), intent(in)                            		::  sys
-!	 type(state), intent(in out)	                      		::  st
-!	 complex(cx), dimension(st%np)							 		::  bigP, bigQ, v_p, v_q
-!	 complex(cx), dimension(st%np,sys%nmode)				 		::  bigF, bigH, v_f, v_h
-!	 complex(cx), dimension(st%np,st%np)              		::  M_p, M_q, M_pi, M_qi,N_p, N_q, N_pi, N_qi
-!	 complex(cx), dimension(st%np,st%np,st%np)       		::  A_p, A_q
-!	 complex(cx), dimension(st%np,st%np,st%np,sys%nmode)  ::  A_f, A_h
-!	 real(rl), dimension(2*st%np**2,2*st%np**2)   	 		::  EqMat_p, EqMat_q
-!	 real(rl), dimension(2*st%np**2)    		 			 		::  EqRhs_p, EqRhs_q, kappaVec_p, kappaVec_q
-!	 real(rl), dimension(st%np,st%np)	   				 		::  Kappa_p_r,Kappa_q_r,kappa_p_c,kappa_q_c
-!	 complex(cx), dimension(st%np,st%np)					 		::  Kappa_p,Kappa_q  !-- FINAL KAPPA MATRICES
-!	 complex(cx),dimension(st%np,sys%nmode)  			 		::  f,h,fc,hc  		
-!	 complex(cx),dimension(st%np)			   			 		::  p,q,pc,qc
-!	 complex(cx),dimension(st%np)			   			 		::  der_E_pc_save,der_E_qc_save
-!	 integer												          		::  i,j,k,l,m,cj,ii,jj,np,info,s
-!	 
-!	 complex(cx), dimension(st%np) 				          		::  tmpV1_p,tmpV1_q,tmpV2_p,tmpV2_q
-!	 complex(cx), dimension(st%np,st%np,st%np,sys%nmode) 	::  tmpA_f1,tmpA_h1,tmpA_f2,tmpA_h2
-!	 complex(cx), dimension(st%np,sys%nmode) 				   ::  tmpV1_f,tmpV1_h
-!
-!
-!	 !-- A few shortcuts
-!	 f=st%f;h=st%h;p=st%p;q=st%q
-!	 fc=conjg(f);hc=conjg(h);pc=conjg(p);qc=conjg(q)
-!	 np = st%np
-!
-!	 !- set all variables to zero
-!	 bigP = 0;bigQ = 0;bigF = 0;bigH = 0
-!	 M_p=0;M_q=0;N_p=0;N_q=0
-!	 M_pi=0;M_qi=0;N_pi=0;N_qi=0
-!	 A_p=0;A_q=0;A_f=0;A_h=0
-!	 eqMat_p=0;eqMat_q=0;eqrhs_p=0;eqrhs_q=0
-!	 v_p=0;v_q=0;v_f=0;v_h=0
-!	 Kappa_p_r=0;Kappa_q_r=0;kappa_p_c=0;kappa_q_c=0
-!	 kappaVec_p=0; kappaVec_q=0;Kappa_p=0;Kappa_q=0
-!
-!
-!	 !==================================================
-!	 !-- STEP 1: Computation of A_p,A_q and v_p,v_q
-!	 !-- pDot(i) = sum_(j,k) [ A_p(i,j,k)*Kappa(k,j) + v_p(i) ] 
-!	 !-- qDot(i) = sum_(j,k) [ A_q(i,j,k)*Kappa(k,j) + v_q(i) ] 
-!
-!	 do i=1,np
-!		  der_E_pc_save(i) = der_E_pc(sys,st,i)
-!		  der_E_qc_save(i) = der_E_qc(sys,st,i)
-!		  bigP(i) = - Ic * der_E_pc_save(i)
-!		  bigQ(i) = - Ic * der_E_qc_save(i)
-!		  do s=1,sys%nmode
-!			 bigF(i,s) = - Ic * ( der_E_fc(sys,st,i,s) &
-!							 + 0.5_rl * f(i,s) * ( der_E_pc_save(i)*pc(i) + conjg(der_E_pc_save(i))*p(i) ) )
-!			 bigH(i,s) = - Ic * ( der_E_hc(sys,st,i,s) &
-!							 + 0.5_rl * h(i,s) * ( der_E_qc_save(i)*qc(i) + conjg(der_E_qc_save(i))*q(i) ) )
-!		  end do
-!	 end do
-!
-!	 !-- Matrix M: to be inverted
-!	 M_p = st%ov_ff
-!	 M_q = st%ov_hh
-!
-!	 !-- perform the inversion
-!	 M_pi = M_p
-!	 M_qi = M_q
-!	 CALL invertH(M_pi,info)
-!	 CALL invertH(M_qi,info)
-!
-!	 
-!	 !-- Define v_p, v_q and A_p, A_q
-!	 v_p = M_pi .matprod. bigP
-!	 v_q = M_qi .matprod. bigQ
-!
-!	 do i=1,size(A_p,1)
-!		do j=1,size(A_p,2)
-!		  do k=1,size(A_p,3)
-!		    A_p(i,j,k) = 0.5_rl* M_pi(i,j) * st%ov_ff(j,k) * p(k)
-!		    A_q(i,j,k) = 0.5_rl* M_qi(i,j) * st%ov_hh(j,k) * q(k)
-!		  end do
-!		end do
-!	 end do
-!	 
-!
-!	 !==================================================
-!	 !-- STEP 2: Computation of A_f,A_h and v_f,v_h
-!	 !-- fDot(i) = sum_(j,k) [ A_f(i,j,k)*Kappa(k,j) ] + v_f(i)  
-!	 !-- hDot(i) = sum_(j,k) [ A_h(i,j,k)*Kappa(k,j) ] + v_h(i)  
-!
-!	 do j=1,np
-!		do m=1,np
-!		  N_p(j,m) = pc(j)*p(m)*st%ov_ff(j,m)
-!		  N_q(j,m) = qc(j)*q(m)*st%ov_hh(j,m) 
-!		end do
-!	 end do
-!
-!	 !-- Calculate Nij and is inverse
-!	 N_pi = N_p
-!	 N_qi = N_q
-!	 CALL invertH(N_pi,info)
-!	 CALL invertH(N_qi,info)
-!	 
-!
-!	 !-- Computation of v_f and v_h (H_i in the notes)
-!	 tmpV1_f=0_cx
-!	 tmpV1_h=0_cx
-!
-!	 !-- First term of v_f (and v_h)
-!	 tmpV1_f = bigF
-!	 tmpV1_h = bigH
-!	 !-- Second term of v_f
-!	 do s=1,sys%nmode
-!		do j=1,np
-!		  do m=1,np
-!			 tmpV1_f(j,s) = tmpV1_f(j,s) &
-!									 - pc(j)*st%ov_ff(j,m)*v_p(m)*f(m,s)
-!			 tmpV1_h(j,s) = tmpV1_h(j,s) &
-!									 - qc(j)*st%ov_hh(j,m)*v_q(m)*h(m,s)
-!		  end do
-!		end do
-!		v_f(:,s) = N_pi .matprod. tmpV1_f(:,s)
-!		v_h(:,s) = N_qi .matprod. tmpV1_h(:,s)
-!	 end do
-!
-!	 tmpA_f1=0_cx; tmpA_h1=0_cx
-!	 tmpA_f2=0_cx; tmpA_h2=0_cx
-!
-!	 !-- Defining the Betref matrices, here designated by A_f and A_h
-!
-!	 do s=1,sys%nmode
-!		do k=1,size(A_f,2)
-!		  do j=1,size(A_f,3)
-!
-!			 do i=1,size(A_f,1)
-!				tmpA_f1(i,j,k,s) = 0.5_rl* N_pi(i,j) * p(k)*pc(j)*f(k,s) * st%ov_ff(j,k)
-!				tmpA_h1(i,j,k,s) = 0.5_rl* N_qi(i,j) * q(k)*qc(j)*h(k,s) * st%ov_hh(j,k)
-!			 end do
-!
-!			 do l=1,np
-!				do m=1,np
-!				  tmpA_f2(l,j,k,s) = tmpA_f2(l,j,k,s) &
-!											 - A_p(m,j,k)*f(m,s)*pc(l)*st%ov_ff(l,m)
-!				  tmpA_h2(l,j,k,s) = tmpA_h2(l,j,k,s) &
-!											 - A_q(m,j,k)*h(m,s)*qc(l)*st%ov_hh(l,m)
-!				end do
-!			 end do
-!
-!		  end do
-!		
-!
-!		  A_f(:,:,k,s) = tmpA_f1(:,:,k,s) + ( N_pi .matprod. tmpA_f2(:,:,k,s) )
-!		  A_h(:,:,k,s) = tmpA_h1(:,:,k,s) + ( N_qi .matprod. tmpA_h2(:,:,k,s) )
-!
-!		end do
-!	 end do
-!
-!	 !==================================================
-!	 !-- STEP 3: Solve the system of equations for Kappa
-!	 !-- Define Q_ij, a 2*np**2 matrix: j in [1,np**2] correpsonds to Re(kappa)
-!	 !--    while j in [1+np**2,2*np**2] corresponds to Im(Kappa)
-!
-!	 cj = st%np**2   !-- a shortcut to get to the imagainary part of kappaVec
-!
-!	 do i=1, np
-!		do m=1, np
-!
-!		  ii = np*(i-1)+m
-!
-!		  do j=1, np
-!			 do k=1, np
-!
-!			   jj = np*(k-1) + j
-!
-!
-!				  eqMat_p(ii,jj) =  kroneckerDelta(ii,jj) 
-!				  eqMat_p(ii,jj+cj) = kroneckerDelta(ii,jj+cj) 
-!				  eqMat_p(ii+cj,jj) = kroneckerDelta(ii+cj,jj) 
-!				  eqMat_p(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) 
-!
-!				  eqMat_q(ii,jj) = kroneckerDelta(ii,jj) 
-!				  eqMat_q(ii,jj+cj) = kroneckerDelta(ii,jj+cj) 
-!				  eqMat_q(ii+cj,jj) = kroneckerDelta(ii+cj,jj) 
-!				  eqMat_q(ii+cj,jj+cj) = kroneckerDelta(ii+cj,jj+cj) 
-!				  
-!				  do s=1,sys%nmode    !-- sum over the modes
-!
-!					 eqMat_p(ii,jj) =  eqMat_p(ii,jj) &
-!												- real( ( conjg(f(i,s))-2_rl*conjg(f(m,s)) ) * A_f(i,j,k,s) ) &
-!												- real( f(i,s) * conjg(A_f(i,j,k,s)) )
-!					 eqMat_p(ii,jj+cj) = eqMat_p(ii,jj+cj) &
-!											  + aimag( ( conjg(f(i,s))-2_rl*conjg(f(m,s)) ) * A_f(i,j,k,s) ) &
-!											  - aimag( f(i,s)*conjg(A_f(i,j,k,s)) )
-!					 eqMat_p(ii+cj,jj) = eqMat_p(ii+cj,jj) &
-!												- aimag( ( conjg(f(i,s))-2_rl*conjg(f(m,s)) ) * A_f(i,j,k,s) ) &
-!												- aimag( f(i,s) * conjg(A_f(i,j,k,s)) )
-!					 eqMat_p(ii+cj,jj+cj) = eqMat_p(ii+cj,jj+cj) &
-!												- real( ( conjg(f(i,s))-2_rl*conjg(f(m,s)) ) * A_f(i,j,k,s) ) &
-!												+ real( f(i,s) * conjg(A_f(i,j,k,s)) )
-!
-!					 eqMat_q(ii,jj) = eqMat_q(ii,jj) &
-!												- real( ( conjg(h(i,s))-2_rl*conjg(h(m,s)) ) * A_h(i,j,k,s) ) &
-!												- real( h(i,s)*conjg(A_h(i,j,k,s)) )
-!					 eqMat_q(ii,jj+cj) = eqMat_q(ii,jj+cj) &
-!											  + aimag( ( conjg(h(i,s))-2_rl*conjg(h(m,s)) ) * A_h(i,j,k,s) ) &
-!											  - aimag( h(i,s)*conjg(A_h(i,j,k,s)) )
-!					 eqMat_q(ii+cj,jj) = eqMat_q(ii+cj,jj) &
-!												- aimag( ( conjg(h(i,s))-2_rl*conjg(h(m,s)) ) * A_h(i,j,k,s) ) &
-!												- aimag( h(i,s) * conjg(A_h(i,j,k,s)) )
-!					 eqMat_q(ii+cj,jj+cj) = eqMat_q(ii+cj,jj+cj) &
-!												- real( ( conjg(h(i,s))-2_rl*conjg(h(m,s)) ) * A_h(i,j,k,s) ) &
-!												+ real( h(i,s) * conjg(A_h(i,j,k,s)) )
-!				  end do
-!
-!			 end do
-!		  end do
-!		end do
-!	 end do
-!
-!
-!  	 !-- define the RHS of the equations for kappa
-!  	 eqRhs_p = 0_cx
-!  	 eqRhs_q = 0_cx
-!	 do i=1,np
-!		do m=1,np
-!		  ii = np*(i-1) + m
-!
-!		  do s=1,sys%nmode
-!			 eqRhs_p(ii) 	  =  eqRhs_p(ii) +  real( conjg(f(i,s))*v_f(i,s) + f(i,s)*conjg(v_f(i,s)) - 2_rl*conjg(f(m,s))*v_f(i,s) )
-!			 eqRhs_q(ii) 	  =  eqRhs_q(ii) +  real( conjg(h(i,s))*v_h(i,s) + h(i,s)*conjg(v_h(i,s)) - 2_rl*conjg(h(m,s))*v_h(i,s) )
-!			 eqRhs_p(ii+cj)  =  eqRhs_p(ii+cj) + aimag( - 2_rl*conjg(f(m,s))*v_f(i,s) )
-!			 eqRhs_q(ii+cj)  =  eqRhs_q(ii+cj) + aimag( - 2_rl*conjg(h(m,s))*v_h(i,s) )
-!		  end do
-!
-!		end do
-!	 end do
-!
-!	 !-- Apply the Lapack algorithm to solve the real system of equations
-!	 !-- the solution replaces the 2nd argument
-!	 kappaVec_p = eqRhs_p
-!	 CALL solveEq_r(eqMat_p,kappaVec_p)
-!	 kappaVec_q = eqRhs_q
-!	 CALL solveEq_r(eqMat_q,kappaVec_q)
-!
-!
-!	 ! Convert the matrices to np*np matrix
-!	 kappa_p_r = transpose(reshape(kappaVec_p(1:np**2),(/np,np/)) )
-!	 kappa_p_c = transpose(reshape(kappaVec_p(1+np**2:2*np**2),(/np,np/)) )
-!	 kappa_q_r = transpose(reshape(kappaVec_q(1:np**2),(/np,np/)) )
-!	 kappa_q_c = transpose(reshape(kappaVec_q(1+np**2:2*np**2),(/np,np/)) )
-!
-!	 kappa_p = kappa_p_r + Ic * kappa_p_c
-!	 kappa_q = kappa_q_r + Ic * kappa_q_c
-!
-!	 !-- Compute the pdots and qdots
-!	 !-- pdot(i) = sum_j,k 0.5*M_pi(i,j)*ov(f(j),f(k))*p(k)*Kappa_p(k,j) + v_p(i)
-!
-!	 tmpV1_p=0_rl;tmpV2_p=0_rl
-!	 tmpV1_q=0_rl;tmpV2_q=0_rl
-!	 do j=1,np
-!		do k=1,np
-!		  tmpV1_p(j)=tmpV1_p(j) &
-!						+ 0.5_rl*p(k)*st%ov_ff(j,k)*Kappa_p(k,j)
-!		  tmpV1_q(j)=tmpV1_q(j) &
-!						+ 0.5_rl*q(k)*st%ov_hh(j,k)*Kappa_q(k,j)
-!		end do
-!	 end do
-!
-!	 tmpV2_p = M_pi .matprod. tmpV1_p
-!	 tmpV2_q = M_qi .matprod. tmpV1_q
-!
-!	 st%pdot = tmpV2_p + v_p
-!	 st%qdot = tmpV2_q + v_q
-!
-!
-!	 !-- Compute the fdots and hdots
-!	 !-- fdot(i) = sum_j,k [ -N_pi(i,j)*p(k)*Kappa_p(k,j)*pc(j)*f(k)*ov(f(j),f(k)) 
-!	 !								+ sum_l,m [ -N_pi(i,l)*A_p(m,j,k)*Kappa_p(k,j)*pc(l)f(m)*ov(f(l),f(m)) ] ] + v_f(i)
-!	 tmpV1_f=0_cx
-!	 tmpV1_h=0_cx
-!
-!	 do s=1, sys%nmode
-!		do i=1,np
-!		  do j=1,np
-!			 do k=1,np
-!				tmpV1_f(i,s) = tmpV1_f(i,s) + A_f(i,j,k,s) * Kappa_p(k,j)
-!				tmpV1_h(i,s) = tmpV1_h(i,s) + A_h(i,j,k,s) * Kappa_q(k,j)
-!			 end do
-!		  end do
-!		end do
-!	 end do
-!	 
-!	 st%fdot = tmpV1_f + v_f
-!	 st%hdot = tmpV1_h + v_h
-!
-!  END SUBROUTINE calcDerivatives_manualsum
-!
-!  FUNCTION rehn_x(sys,st,n,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 integer, intent(in)       ::  n
-!	 real(rl)	 					::  rehn_x
-!	 complex(cx)					::  tmp
-!	 integer							::  s
-!
-!	 rehn_x = 0_rl
-!	 tmp = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = tmp + real( st%h(n,s) )* exp( Ic*(sys%w(s)/c_light)*2_rl*PI*x ) &
-!														  * sqrt(1._rl/sys%nmode)
-!	 end do
-!	 rehn_x = real(tmp)
-!
-!  END FUNCTION 
-!  FUNCTION imfn_x(sys,st,n,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 integer, intent(in)       ::  n
-!	 real(rl) 						::  imfn_x
-!	 complex(cx)					::  tmp
-!	 integer							::  s
-!
-!	 imfn_x = 0_rl
-!	 tmp = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = tmp + aimag( st%f(n,s) )* exp( Ic*(sys%w(s)/c_light)*2_rl*PI*x ) &
-!														  * sqrt(1._rl/sys%nmode)
-!	 end do
-!	 imfn_x = real(tmp)
-!
-!  END FUNCTION 
-!  FUNCTION imhn_x(sys,st,n,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 integer, intent(in)       ::  n
-!	 real(rl) 						::  imhn_x
-!	 complex(cx)					::  tmp
-!	 integer							::  s
-!
-!	 imhn_x = 0_rl
-!	 tmp = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = tmp + aimag( st%h(n,s) )* exp( Ic*(sys%w(s)/c_light)*2_rl*PI*x ) &
-!														  * sqrt(1._rl/sys%nmode)
-!	 end do
-!	 imhn_x = real(tmp)
-!
-!  END FUNCTION 
-!
-!  FUNCTION ref_x(sys,st,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 complex(cx) 					::  ref_x
-!	 complex(cx)					::  tmp
-!	 integer							::  n,m,s
-!
-!	 ref_x = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = 0_cx
-!		do n=1, st%np
-!		  do m=1, st%np
-!			 tmp = tmp + conjg(st%p(n))*st%p(m) * ( conjg(st%f(n,s)) + st%f(m,s) ) * st%ov_ff(n,m) / 2._rl
-!		  end do
-!		end do
-!		tmp = tmp * exp( Ic*sys%w(s)*2_rl*PI*x ) * sqrt(sys%wmax/sys%nmode)
-!		ref_x = ref_x + tmp
-!	 end do
-!
-!  END FUNCTION 
-!  FUNCTION imf_x(sys,st,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 complex(cx) 					::  imf_x
-!	 complex(cx)					::  tmp
-!	 integer							::  n,m,s
-!
-!	 imf_x = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = 0_cx
-!		do n=1, st%np
-!		  do m=1, st%np
-!			 tmp = tmp + conjg(st%p(n))*st%p(m) * ( st%f(m,s) - conjg(st%f(n,s)) ) * st%ov_ff(n,m) / (Ic*2._rl)
-!		  end do
-!		end do
-!		tmp = tmp * exp( Ic*sys%w(s)*2_rl*PI*x ) * sqrt(sys%wmax/sys%nmode)
-!		imf_x = imf_x + tmp
-!	 end do
-!
-!  END FUNCTION
-!  FUNCTION reh_x(sys,st,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 complex(cx) 					::  reh_x
-!	 complex(cx)					::  tmp
-!	 integer							::  n,m,s
-!
-!	 reh_x = 0_cx
-!	 do s=1, sys%nmode
-!	 	tmp = 0_cx
-!		do n=1, st%np
-!		  do m=1, st%np
-!			 tmp = tmp + conjg(st%q(n))*st%q(m) * ( conjg(st%h(n,s)) + st%h(m,s) ) * st%ov_hh(n,m) / 2._rl
-!		  end do
-!		end do
-!		tmp = tmp * exp( Ic*sys%w(s)*2_rl*PI*x ) * sqrt(sys%wmax/sys%nmode)
-!		reh_x = reh_x + tmp
-!	 end do
-!
-!  END FUNCTION 
-!  FUNCTION imh_x(sys,st,x)
-!
-!	 type(param),intent(in)   	::  sys
-!	 type(state),intent(in)    ::  st
-!	 real(rl), intent(in) 	   ::  x
-!	 complex(cx) 					::  imh_x
-!	 complex(cx)					::  tmp
-!	 integer							::  n,m,s
-!
-!	 imh_x = 0_cx
-!	 do s=1, sys%nmode
-!		tmp = 0_cx
-!		do n=1, st%np
-!		  do m=1, st%np
-!			 tmp = tmp + conjg(st%q(n))*st%q(m) * ( st%h(m,s) - conjg(st%h(n,s)) ) * st%ov_hh(n,m) / (2._rl*Ic)
-!		  end do
-!		end do
-!		tmp = tmp * exp( Ic*sys%w(s)*2_rl*PI*x ) * sqrt(sys%wmax/sys%nmode)
-!		imh_x = imh_x + tmp
-!	 end do
-!
-!  END FUNCTION
-!
-!  FUNCTION wigFH(x,p,f,h)
-!  
-!	 complex(cx), intent(in)  ::  f,h
-!	 real(rl), intent(in)	  ::  x,p
-!	 complex(cx)				  ::  wigFH
-!
-!	 wigFH = (2._rl/pi) * exp( - 0.5_rl*( 2._rl*p + Ic*(f-conjg(h) ) )**2  &
-!										   - 0.5_rl*( 2._rl*x - (f+conjg(h) ) )**2	 &
-!										   - 0.5_rl*( abs(f)**2 + abs(h)**2 - 2._rl*f*conjg(h) ) ) 
-!
-!  END FUNCTION
-!  FUNCTION wigner_2pol(x,p,p1,p2,f1,f2)
-!
-!	 complex(cx), intent(in)  ::  p1,p2,f1,f2
-!	 real(rl), intent(in)	  ::  x,p
-!	 real(rl)	   			  ::  wigner_2pol
-!	 real(rl)					  ::  normSq
-!
-!	 normSq = abs(p1)**2 + abs(p2)**2 &
-!					 + 2._rl*real( p1*conjg(p2)*exp( - 0.5_rl*( abs(f1)**2 + abs(f2)**2 - 2._rl*conjg(f2)*f1 ) ) )
-!
-!	 wigner_2pol = real( (1._rl/normSq) * ( abs(p1)**2*wigFH(x,p,f1,f1) + abs(p2)**2*wigFH(x,p,f2,f2) &
-!										  + p1*conjg(p2)*wigFH(x,p,f1,f2) + p2*conjg(p1)*wigFH(x,p,f2,f1) ) )
-!
-!
-!  END FUNCTION
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

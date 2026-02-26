@@ -1,35 +1,23 @@
 ! ==============================================================================
-!  FILE: lapackmodule.f90
+!  FILE / MODULE: lapackmodule.f90 (lapackmodule)
 !
-!  PURPOSE
-!    Original research code used to produce the numerical data underlying the figures of:
-!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
-!      ultrastrong-coupling waveguide QED".
+!  PURPOSE & CONTEXT
+!    Provides high-level Fortran wrappers for standard BLAS and LAPACK routines 
+!    used throughout the waveguide QED simulation. This ensures the dense linear 
+!    algebra operations required by the variational equations of motion (EOMs) 
+!    are executed efficiently.
 !
-!  OVERVIEW
-!    This code implements a time-dependent variational simulation of the spin-boson
-!    model (a two-level system coupled to a continuum of bosonic modes) using a
-!    superposition of multimode coherent states (sometimes called the multi-polaron
-!    or MCS ansatz). The main workflow is:
-!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
-!      with systm:CalcDerivatives computing the variational equations of motion.
-!
-!  BUILD / DEPENDENCIES
-!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!  CORE RESPONSIBILITIES
+!    1. Matrix Inversion : Wrappers for Cholesky (`ZPOTRF`), LU (`ZGETRF`), 
+!                          and Bunch-Kaufman (`ZHETRF`) factorizations to invert 
+!                          Hermitian, Positive-Definite, and General matrices.
+!    2. Linear Solvers   : Direct solvers for AX = B systems (`DGESV`, `ZGESV`).
+!    3. Multiplication   : Operator overloading for fast BLAS matrix 
+!                          multiplication (`ZGEMM`).
 !
 ! ==============================================================================
 !
 MODULE lapackmodule
-!> -------------------------------------------------------------------------
-!> MODULE: lapackmodule
-!> -------------------------------------------------------------------------
-!> Purpose / context:
-!>   Module `lapackmodule`: central container for simulation types and routines.
-!>   This module defines the core data structures (param/state/traj) and the
-!>   variational equations of motion used during time evolution.
-!> Arguments:
-!>   (none)
-!>
 
   USE typedefs, only : cx => c_type, rl=> r_type
   USE consts
@@ -38,26 +26,29 @@ MODULE lapackmodule
 
   INTERFACE OPERATOR(.matprod.)
     module procedure matmultiply_c
-    !> -------------------------------------------------------------------------
-    !> MODULE: procedure
+!> -------------------------------------------------------------------------
+    !> INTERFACE: OPERATOR(.matprod.)
     !> -------------------------------------------------------------------------
     !> Purpose / context:
-    !>   Module `procedure`: central container for simulation types and routines.
-    !>   This module defines the core data structures (param/state/traj) and the
-    !>   variational equations of motion used during time evolution.
-    !> Arguments:
-    !>   (none)
-    !>
+    !>   Overloads the custom `.matprod.` operator to seamlessly compute the 
+    !>   product of two complex matrices using the highly optimized BLAS `zgemm` 
+    !>   routine under the hood, rather than standard unoptimized Fortran `matmul`.
+    !> -------------------------------------------------------------------------
   END INTERFACE OPERATOR(.matprod.)
 
 CONTAINS
 
-  ! --> Inverse of a Hermitian Positive Definite matrix
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: InvertHPD
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Inverts a Hermitian Positive Definite (HPD) matrix in-place. 
+  !>   It utilizes the LAPACK Cholesky factorization routine (`ZPOTRF`) 
+  !>   followed by the specific inversion routine (`ZPOTRI`). Since LAPACK 
+  !>   only returns the upper triangular part, this routine explicitly reconstructs 
+  !>   the full matrix by mirroring the upper half into the lower half.
   !> Arguments:
-  !>   - A
+  !>   - A : The complex HPD matrix to be inverted (modified in-place to its inverse).
   !>
   SUBROUTINE InvertHPD(A)
 
@@ -89,12 +80,17 @@ CONTAINS
 	 end if
 
   END SUBROUTINE InvertHPD
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: InvertGeneral
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Inverts a general dense complex matrix in-place. 
+  !>   Computes the LU factorization using `ZGETRF` (with partial pivoting) 
+  !>   and subsequently generates the full matrix inverse using `ZGETRI`.
   !> Arguments:
-  !>   - A
-  !>   - info
+  !>   - A    : The general complex matrix to be inverted (modified in-place).
+  !>   - info : Output flag from LAPACK (0 indicates successful inversion).
   !>
   SUBROUTINE InvertGeneral(A,info)
     COMPLEX(cx), intent(in out)                  ::  A(:,:)
@@ -127,12 +123,18 @@ CONTAINS
 
   END SUBROUTINE InvertGeneral
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: InvertH
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Inverts a generic complex Hermitian matrix in-place. 
+  !>   Uses the Bunch-Kaufman diagonal pivoting method via `ZHETRF`, followed 
+  !>   by `ZHETRI`. Because LAPACK only overwrites the upper triangle, this 
+  !>   routine explicitly reconstructs the lower half by taking the complex 
+  !>   conjugate of the mirrored upper elements.
   !> Arguments:
-  !>   - A
-  !>   - info
+  !>   - A    : The complex Hermitian matrix (modified in-place to its inverse).
+  !>   - info : Output flag from LAPACK (0 indicates successful inversion).
   !>
   SUBROUTINE InvertH(A,info)
     COMPLEX(cx), intent(in out)                  ::  A(:,:)
@@ -172,13 +174,16 @@ CONTAINS
 
   END SUBROUTINE InvertH
 
-  ! --> Solve General Complex Equations
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: SolveEq_r
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Solves a system of real linear equations of the form A * X = B. 
+  !>   Wraps the standard LAPACK double-precision general solver `DGESV`, 
+  !>   which performs an LU decomposition with partial pivoting.
   !> Arguments:
-  !>   - A
-  !>   - B
+  !>   - A : The real square coefficient matrix (overwritten by LU factors).
+  !>   - B : On entry, the right-hand side vector; on exit, the solution vector X.
   !>
   SUBROUTINE SolveEq_r(A,B)
     REAL(rl), intent(in out)               ::  A(:,:)
@@ -200,12 +205,17 @@ CONTAINS
 	 end if
 
   END SUBROUTINE SolveEq_r
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: SolveEq_c
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Solves a system of complex linear equations of the form A * X = B. 
+  !>   Wraps the LAPACK complex general solver `ZGESV`, performing an LU 
+  !>   decomposition to evaluate the solution vector.
   !> Arguments:
-  !>   - A
-  !>   - B
+  !>   - A : The complex square coefficient matrix (overwritten by LU factors).
+  !>   - B : On entry, the right-hand side vector; on exit, the solution vector X.
   !>
   SUBROUTINE SolveEq_c(A,B)
 
@@ -229,13 +239,19 @@ CONTAINS
 
  END SUBROUTINE
 
-  ! --> Matrix muliplication
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: matmultiply_c
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Performs high-performance complex matrix multiplication (C = A * B). 
+  !>   Directly wraps the level-3 BLAS routine `ZGEMM`, bypassing slow, unoptimized 
+  !>   nested Fortran loops. This is the underlying procedure mapped to the 
+  !>   custom `.matprod.` operator.
   !> Arguments:
-  !>   - amat
-  !>   - bmat
+  !>   - amat : The left-hand complex matrix.
+  !>   - bmat : The right-hand complex matrix.
+  !> Return:
+  !>   - outmat : The resulting complex matrix product.
   !>
   FUNCTION matmultiply_c(amat,bmat) RESULT(outmat)
 

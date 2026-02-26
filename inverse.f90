@@ -1,35 +1,27 @@
 ! ==============================================================================
-!  FILE: inverse.f90
+!  FILE / MODULE: inverse.f90 (INVERSE)
 !
-!  PURPOSE
-!    Original research code used to produce the numerical data underlying the figures of:
-!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
-!      ultrastrong-coupling waveguide QED".
+!  PURPOSE & CONTEXT
+!    Advanced numerical solver module for the waveguide QED simulation. It 
+!    implements specialized matrix inversion and linear system solvers required 
+!    to evaluate the variational equations of motion (EOMs).
 !
-!  OVERVIEW
-!    This code implements a time-dependent variational simulation of the spin-boson
-!    model (a two-level system coupled to a continuum of bosonic modes) using a
-!    superposition of multimode coherent states (sometimes called the multi-polaron
-!    or MCS ansatz). The main workflow is:
-!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
-!      with systm:CalcDerivatives computing the variational equations of motion.
+!  CORE RESPONSIBILITIES
+!    1. Direct Solvers  : Implements `directInverse` to solve the full system 
+!                         of variational equations via standard LU decomposition.
+!    2. Iterative Solvers: Implements "SuperInverse" routines using a stabilized 
+!                         BiCGStab(l) Krylov subspace method with LU 
+!                         preconditioning for high-dimensional bases (np > 12).
+!    3. Data Management : Includes professional sorting (MergeSort) and 
+!                         diagnostic printing routines for complex tensors.
 !
 !  BUILD / DEPENDENCIES
-!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!    * Requires BLAS/LAPACK (ZGETRF, ZTRSM, ZLASWP).
 !
 ! ==============================================================================
 !
 MODULE INVERSE
-!> -------------------------------------------------------------------------
-!> MODULE: INVERSE
-!> -------------------------------------------------------------------------
-!> Purpose / context:
-!>   Module `INVERSE`: central container for simulation types and routines.
-!>   This module defines the core data structures (param/state/traj) and the
-!>   variational equations of motion used during time evolution.
-!> Arguments:
-!>   (none)
-!>
+
   USE consts
   USE lapackmodule
   USE typedefs, only : cx => c_type, rl=> r_type
@@ -37,40 +29,33 @@ MODULE INVERSE
 
   INTERFACE printArray
     module procedure printMatrix
-    !> -------------------------------------------------------------------------
-    !> MODULE: procedure
-    !> -------------------------------------------------------------------------
-    !> Purpose / context:
-    !>   Module `procedure`: central container for simulation types and routines.
-    !>   This module defines the core data structures (param/state/traj) and the
-    !>   variational equations of motion used during time evolution.
-    !> Arguments:
-    !>   (none)
-    !>
     module procedure printVector
-    !> -------------------------------------------------------------------------
-    !> MODULE: procedure
+!> -------------------------------------------------------------------------
+    !> INTERFACE: printArray
     !> -------------------------------------------------------------------------
     !> Purpose / context:
-    !>   Module `procedure`: central container for simulation types and routines.
-    !>   This module defines the core data structures (param/state/traj) and the
-    !>   variational equations of motion used during time evolution.
-    !> Arguments:
-    !>   (none)
-    !>
+    !>   Generic interface for diagnostic output. Allows the developer to call 
+    !>   `printArray` for either 1D complex vectors or 2D complex matrices 
+    !>   during debugging of the variational parameters.
+    !> -------------------------------------------------------------------------
   END INTERFACE
 
 
   CONTAINS
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: directInverse
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   A standard direct solver for the multi-polaron variational system. 
+  !>   It maps the 3D tensor representation of the overlaps `A(n,n,n)` into a 
+  !>   flattened 2D matrix `A2D(n^2, n^2)` and solves the resulting linear 
+  !>   system for the parameter derivatives using LU decomposition (`SolveEq_c`).
   !> Arguments:
-  !>   - n
-  !>   - A
-  !>   - sol
-  !>   - rhs
+  !>   - n   : Number of polarons in the basis.
+  !>   - A   : Input 3D overlap tensor.
+  !>   - rhs : Right-hand side driving vector.
+  !>   - sol : Output solution vector (parameter derivatives).
   !>
   subroutine directInverse(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
@@ -95,14 +80,20 @@ MODULE INVERSE
     Call solveEq_c(A2D, sol)
   end subroutine directInverse
 
+!> -------------------------------------------------------------------------
+  !> SUBROUTINE: superInverse_f / superInverse_h
   !> -------------------------------------------------------------------------
-  !> SUBROUTINE: superInverse_f
-  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   High-performance iterative solver for the bosonic "f" or "h" manifolds. 
+  !>   Designed for large basis sizes where direct O(N^6) inversion is costly. 
+  !>   It utilizes an LU-preconditioned BiCGStab(2) algorithm to converge on 
+  !>   the solution. If the iterative method fails to converge within tolerance, 
+  !>   it automatically falls back to `directInverse` for stability.
   !> Arguments:
-  !>   - n
-  !>   - A
-  !>   - sol
-  !>   - rhs
+  !>   - n   : Number of polarons.
+  !>   - A   : Overlap tensor.
+  !>   - sol : Current solution / seed.
+  !>   - rhs : Driving terms.
   !>
   subroutine superInverse_f(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
@@ -197,15 +188,6 @@ MODULE INVERSE
     end if
   end subroutine
 
-  !> -------------------------------------------------------------------------
-  !> SUBROUTINE: superInverse_h
-  !> -------------------------------------------------------------------------
-  !> Arguments:
-  !>   - n
-  !>   - A
-  !>   - sol
-  !>   - rhs
-  !>
   subroutine superInverse_h(n,A,sol,rhs)
     complex(cx),intent(in)     :: A(n,n,n)
     complex(cx),intent(in)     :: rhs(n**2)
@@ -298,11 +280,14 @@ MODULE INVERSE
     end if
   end subroutine
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: ZBCG2
   !> -------------------------------------------------------------------------
-  !> Arguments:
-  !>   (none)
+  !> Purpose / context:
+  !>   Core implementation of the Bi-Conjugate Gradient Stabilized method 
+  !>   of order l=2. This routine minimizes the residual of the non-symmetric 
+  !>   linear systems generated by the multi-polaron ansatz. Includes 
+  !>   optimizations for reliable residual updates in finite precision.
   !>
   subroutine ZBCG2 (print_resid,l,n,x,nonzero_x,rhs,m,A,toler, &
                     mxmatvec,work,precondActive,Lo,Up,Perm,&
@@ -656,13 +641,19 @@ MODULE INVERSE
   end subroutine ZBCG2
 
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: zdot_bcg
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the complex inner product of two vectors, defined as the 
+  !>   sum of `conjg(zx) * zy`. This is the fundamental operation for 
+  !>   calculating projections and orthogonality within the Krylov subspace 
+  !>   methods.
   !> Arguments:
-  !>   - n
-  !>   - zx
-  !>   - zy
+  !>   - n      : Vector dimension.
+  !>   - zx, zy : Complex vectors.
+  !> Return:
+  !>   - complex(cx) : The resulting complex scalar inner product.
   !>
   function zdot_bcg(n,zx,zy)
 
@@ -677,12 +668,18 @@ MODULE INVERSE
   end function zdot_bcg
 
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: dnorm2_bcg
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the standard Euclidean L2 norm of a complex vector. Used 
+  !>   internally by the BiCGStab(2) algorithm to monitor the residual 
+  !>   magnitude and determine numerical convergence.
   !> Arguments:
-  !>   - n
-  !>   - zx
+  !>   - n  : Vector dimension.
+  !>   - zx : The complex vector to be evaluated.
+  !> Return:
+  !>   - real(8) : The scalar L2 norm.
   !>
   function dnorm2_bcg(n,zx)
 
@@ -697,14 +694,18 @@ MODULE INVERSE
     dnorm2_bcg = sqrt( abs( zdot_bcg(n, zx, zx) ) )
   end function dnorm2_bcg
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: matvec
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   A generic wrapper for complex matrix-vector multiplication (y = A * x). 
+  !>   Utilizes the Fortran intrinsic `MATMUL` for standard 2D dense matrices 
+  !>   used within the iterative solver routines.
   !> Arguments:
-  !>   - n
-  !>   - x
-  !>   - y
-  !>   - A
+  !>   - n : Dimension of the system.
+  !>   - x : Input complex vector.
+  !>   - y : Output complex vector.
+  !>   - A : Input complex coefficient matrix.
   !>
   SUBROUTINE matvec(n, x, y, A)
     integer               :: n
@@ -716,14 +717,20 @@ MODULE INVERSE
     RETURN
   end subroutine
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: blockMatvec
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Computes the specialized matrix-vector product required for the 
+  !>   multi-polaron variational derivatives. It treats the flattened vector 
+  !>   `x` as a block-structure and applies the 3D tensor `Alpha` to evaluate 
+  !>   the coupling between different coherent state components across 
+  !>   the polaron basis.
   !> Arguments:
-  !>   - n
-  !>   - x
-  !>   - y
-  !>   - Alpha
+  !>   - n     : Block size (number of polarons).
+  !>   - x     : Input flattened complex vector of size n^2.
+  !>   - y     : Output flattened complex vector of size n^2.
+  !>   - Alpha : 3D tensor representing the polaron overlap couplings.
   !>
   subroutine blockMatvec(n, x, y, Alpha)
     integer                  :: n
@@ -755,16 +762,21 @@ MODULE INVERSE
   end subroutine blockMatvec
 
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: precond
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Applies an LU-based preconditioner to a vector `y` during the iterative 
+  !>   BiCGStab solver. It performs a forward and backward substitution using 
+  !>   the cached `Lo` and `Up` triangular matrices and the pivot permutation 
+  !>   array `Perm`. This accelerates convergence by transforming the 
+  !>   variational system into a better-conditioned identity-proximal form.
   !> Arguments:
-  !>   - n
-  !>   - y
-  !>   - active
-  !>   - Lo
-  !>   - Up
-  !>   - Perm
+  !>   - n      : Vector dimension.
+  !>   - y      : The vector to be preconditioned (modified in-place).
+  !>   - active : Boolean flag to toggle preconditioning.
+  !>   - Lo, Up : Cached lower and upper triangular LU factors.
+  !>   - Perm   : Cached pivot indices for row swapping.
   !>
   SUBROUTINE precond (n,y,active,Lo,Up,Perm)
     integer                  :: n
@@ -788,19 +800,21 @@ MODULE INVERSE
 
   !-- sorting routines
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: Merge
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   The merging phase of the MergeSort algorithm. Combines two sorted 
+  !>   sub-arrays (`A` and `B`) into a single sorted array (`C`). Crucially, 
+  !>   it simultaneously reorders an associated complex array (`indx`), 
+  !>   ensuring that the variational parameters remain linked to their 
+  !>   corresponding sorted physical indices.
   !> Arguments:
-  !>   - A
-  !>   - NA
-  !>   - B
-  !>   - NB
-  !>   - C
-  !>   - NC
-  !>   - indx
-  !>   - indxT
-  !>   - indxC
+  !>   - NA, NB, NC : Dimensions of sub-arrays and destination array.
+  !>   - A, B       : Input sorted integer sub-arrays.
+  !>   - C          : Output unified sorted integer array.
+  !>   - indx, indxT: Complex index arrays associated with A and B.
+  !>   - indxC      : Unified complex index array associated with C.
   !>
   subroutine Merge(A,NA,B,NB,C,NC,indx,indxT,indxC)
 
@@ -836,6 +850,15 @@ MODULE INVERSE
    return
  end subroutine merge
 
+!> -------------------------------------------------------------------------
+  !> SUBROUTINE: Sort / MergeSort
+  !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Implements a stable recursive MergeSort algorithm. Used to organize 
+  !>   variational parameters or grid indices based on magnitude. This is 
+  !>   essential for pruning the basis when two polarons become nearly 
+  !>   identical (high overlap).
+  !>
  recursive subroutine MergeSort(A,N,T,indx,indxT)
 
    integer, intent(in) :: N
@@ -873,14 +896,6 @@ MODULE INVERSE
    return
  end subroutine MergeSort
 
- !> -------------------------------------------------------------------------
- !> SUBROUTINE: Sort
- !> -------------------------------------------------------------------------
- !> Arguments:
- !>   - n
- !>   - A
- !>   - indx
- !>
  subroutine Sort(n,A,indx)
    integer, intent (in)        :: n
    integer, intent(in out)     :: A(n)
@@ -896,12 +911,12 @@ MODULE INVERSE
 
   ! -- math routines
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: kroneckerDelta
   !> -------------------------------------------------------------------------
-  !> Arguments:
-  !>   - a
-  !>   - b
+  !> Purpose / context:
+  !>   Mathematical utility evaluating the discrete Kronecker delta function 
+  !>   δ_{a,b}. Returns 1 if indices match and 0 otherwise.
   !>
   FUNCTION kroneckerDelta(a,b)
 
@@ -915,13 +930,14 @@ MODULE INVERSE
  		end if
   END FUNCTION
 
-  ! -- printing matrices routines
-
+!> -------------------------------------------------------------------------
+  !> SUBROUTINE: printMatrix / printVector
   !> -------------------------------------------------------------------------
-  !> SUBROUTINE: printMatrix
-  !> -------------------------------------------------------------------------
-  !> Arguments:
-  !>   - A
+  !> Purpose / context:
+  !>   Formatted diagnostic output for complex-valued arrays. It prints a 
+  !>   readable grid of the matrix elements, representing unity as "1" and 
+  !>   near-zero values as "." to allow for quick visual inspection of 
+  !>   orthogonality and numerical stability.
   !>
   SUBROUTINE printMatrix(A)
 
@@ -944,12 +960,6 @@ MODULE INVERSE
     print*, '______'
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
-  !> SUBROUTINE: printVector
-  !> -------------------------------------------------------------------------
-  !> Arguments:
-  !>   - A
-  !>
   SUBROUTINE printVector(A)
     complex(cx)                      :: A(:)
     integer                          :: i,j

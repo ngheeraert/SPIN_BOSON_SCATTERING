@@ -1,35 +1,44 @@
 ! ==============================================================================
 !  FILE: output.f90
 !
-!  PURPOSE
-!   Research code used to produce the numerical data underlying the figures of:
-!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
-!      ultrastrong-coupling waveguide QED".
+!  PURPOSE & CONTEXT
+!    Core physics engine and data structures for the numerical simulation of 
+!    ultrastrong-coupling waveguide QED: 
+!      N. Gheeraert et al., "Particle production in ultrastrong-coupling 
+!      waveguide QED", Phys. Rev. A 98, 043816 (2018).
 !
-!  OVERVIEW
-!    This code implements a time-dependent variational simulation of the spin-boson
-!    model (a two-level system coupled to a continuum of bosonic modes) using a
-!    superposition of multimode coherent states (sometimes called the multi-polaron
-!    or MCS ansatz). The main workflow is:
-!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
-!      with systm:CalcDerivatives computing the variational equations of motion.
+!  PHYSICAL MODEL & METHODOLOGY
+!    Implements a time-dependent variational simulation of the spin-boson model 
+!    (a two-level system coupled to a one-dimensional continuum of bosonic modes). 
+!    The system's wave-function is approximated using a superposition of multimode 
+!    coherent states, commonly referred to as the multi-polaron or MCS (Multiple 
+!    Coherent States) ansatz.
+!
+!  CORE RESPONSIBILITIES & WORKFLOW
+!    This module orchestrates the time evolution and data export. It drives 
+!    the adaptive 4th-order Runge-Kutta (RK4) integration scheme, with dynamic 
+!    basis enlargement.
+!
+!      1. Data Structures : Manages the fundamental types (`param`, `state`, `traj`).
+!      2. Time Evolution  : Drives the adaptive RK4 loop and handles basis 
+!                           dimension changes (adding/removing polarons).
+!      3. Observables     : Computes macroscopic physical quantities (reflection, 
+!                           transmission, photon densities, and g2 correlations).
+!      4. Data Export     : Formats and writes diagnostic/physical data to disk.
+!
+!  EXECUTION HIERARCHY
+!      main.f90 
+!       └── output.f90:printTrajectory_DL 
+!            └── output.f90:evolveState_DL 
+!                 └── output.f90:Evolve_RK4 (integrator)
+!                      └── systm.f90:CalcDerivatives (computes variational EOMs)
 !
 !  BUILD / DEPENDENCIES
-!    * Requires BLAS/LAPACK (ZGESV, ZGETRF, ZTRSM, ZPOTRF, ...).
+!    * BLAS / LAPACK (Requires standard routines: ZGESV, ZGETRF, ZTRSM, ZPOTRF)
 !
 ! ==============================================================================
 !
 MODULE output
-!> -------------------------------------------------------------------------
-!> MODULE: output
-!> -------------------------------------------------------------------------
-!> Purpose / context:
-!>   Module `output`: central container for simulation types and routines.
-!>   This module defines the core data structures (param/state/traj) and the
-!>   variational equations of motion used during time evolution.
-!> Arguments:
-!>   (none)
-!>
 
   USE systm
   USE consts
@@ -38,20 +47,18 @@ MODULE output
 
 CONTAINS
 
-  !=========================================================
-  !== MAIN ROUTINE
-  !=========================================================
-
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: printTrajectory_DL
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   High-level driver: allocate arrays, construct initial state, evolve to sys%tmax,
-  !>   then write observables to disk (spectra, reflection/transmission, correlations).
+  !>   Top-level driver for the time-dependent variational simulation.
+  !>   Initializes the system state based on the preparation flag, handles the 
+  !>   time-evolution loop, triggers basis expansion (polaron adding), and 
+  !>   computes final physical observables (reflection, transmission, correlations).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - st_0
+  !>   - sys  : Parameter structure defining the physical system and grid.
+  !>   - st   : The dynamic variational state (current time).
+  !>   - st_0 : The initial state at t=0, preserved for reference and observable calculations.
   !>
   SUBROUTINE printTrajectory_DL(sys,st,st_0) 
 
@@ -66,8 +73,6 @@ CONTAINS
 	 !========================================================
 	 !-- Allocation and initialisation
 	 !=======================================================
-	 !name_check_sol=trim(adjustl(sys%file_path))//"/check_sol_"//trim(adjustl(parameterchar(sys)))//".d"
-	 !open (unit=200,file=name_check_sol,action="write",status="replace")
 
 	 IF_MAKEGIF: IF ( sys%makegif == 1 ) THEN
 		CALL open_gif_files(sys)
@@ -78,29 +83,31 @@ CONTAINS
 	 CALL allocate_trajectory(sys,tr)
 	 print*, "-- ARRAYS ALLOCATED"
 
-	 !-- FULL-CHAIN PREPARATIONS
+	!-- FULL-CHAIN PREPARATIONS
+	 !-- Select the initial physical configuration of the wavepacket and qubit
 	 if ( sys%prep == -1 ) then
-		 !-- do nothing
+		 !-- Custom or pre-allocated state (do nothing)
 	 else if ( sys%prep == 50 ) then
-	 	!-- initialise with a coherent state for the wp and the GS for the qubit
+	 	!-- Gaussian coherent state wavepacket + qubit in ground state
 		CALL initialise_cs_gs(sys,st_0,sys%k0,sys%x0,sys%sigma,sys%n_wp,cl_st_0)
 		CALL remove_gs(sys,st_0,cl_st_0,wp_st_0)
 		st = st_0
 	 else if ( sys%prep == 51 ) then
-	 	!-- initialise with a photon for the wp and the GS for the qubit
+	 	!-- Single photon Fock state + qubit in ground state
 		CALL initialise_photon_gs(sys,st_0,sys%k0,sys%x0,sys%sigma,sys%n_wp,cl_st_0)
 		CALL remove_gs(sys,st_0,cl_st_0,wp_st_0)
 		st = st_0
 	 else if ( sys%prep == 52 ) then
-	 	!-- initialise with a coherent state for the wp and the GS for the qubit
+	 	!-- Single photon wavepacket (no explicit ground state separation)
 		CALL initialise_photon(sys,st_0,sys%k0,sys%x0,sys%sigma,sys%n_wp,cl_st_0)
 		st = st_0
 	 else if ( sys%prep == 54 ) then
-	 	!-- initialise with a coherent state with 2 frequencies for the wp and the GS for the qubit
+	 	!-- Bi-chromatic coherent state wavepacket + qubit in ground state
 		CALL initialise_cs_2freqs_gs(sys,st_0,sys%k0,sys%k0_2,sys%x0,sys%sigma,sys%n_wp,cl_st_0)
 		CALL remove_gs(sys,st_0,cl_st_0,wp_st_0)
 		st = st_0
 	 else if ( sys%prep == 60 ) then
+	    !-- Prepare as prep=50 but subsequently overwrite with a state from file (Even/Odd basis)
 		sys%prep=sys%prep-10
 		CALL initialise_cs_gs(sys,st_0,sys%k0,sys%x0,sys%sigma,sys%n_wp,cl_st_0)
 		CALL remove_gs(sys,st_0,cl_st_0,wp_st_0)
@@ -173,9 +180,6 @@ CONTAINS
 
 	 R = reflection(sys,wp_st,wp_st_0)
 	 T = transmission(sys,wp_st,wp_st_0)
-	 !!CALL print_nk_EO_k0(sys,st,"  fwp")
-	 !losses_k0_energy = losses_k0_w(sys,wp_st,wp_st_0)
-	 !losses_k0_photons = losses_k0_ph(sys,wp_st,wp_st_0)
 
 	 write(*,'(a30,f12.9)') "reflection ", R
 	 write(*,'(a30,f12.9)') "transmission ", T
@@ -186,21 +190,23 @@ CONTAINS
 	 write(105,*)
 	 close(105)
 
-
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: evolveState_DL
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Inner time evolution loop with adaptive diagnostics. May stop early to trigger
-  !>   basis enlargement (adding coherent components) when monitored error increases.
+  !>   Inner time evolution loop executing the variational equations of motion.
+  !>   It adaptively monitors the local energy/norm error and adjusts the Runge-Kutta 
+  !>   time-step width (slowfactor). Can interrupt the loop to return control to 
+  !>   the main driver for dynamically adding a coherent component to the basis.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - tr
-  !>   - tmax
-  !>   - add
-  !>   - st_ba
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state to be evolved.
+  !>   - tr    : Trajectory object recording observables over time.
+  !>   - tmax  : Maximum simulation time for this specific evolution block.
+  !>   - add   : Flag indicating if the system should attempt to add polarons.
+  !>   - st_ba : Backup state used for rollbacks when integration error spikes.
   !>
   SUBROUTINE evolveState_DL(sys,st,tr,tmax, add, st_ba) 
 
@@ -239,11 +245,6 @@ CONTAINS
 	 superinverseflag = .true.
 
 	 EVOLUTION: DO
-
-		!if ((st%t>20).and.(yyy==1)) then
-		!  CALL remove_coherent_state(sys,st)
-		!  yyy=0
-		!end if
 
 		if ( tmax <= st%t ) exit evolution
 
@@ -316,14 +317,6 @@ CONTAINS
 			 CALL evolve_rk4( sys,st,ost,oost,1.0e5_rl,superInverseFlag )
 			 nb_clean_evolve = nb_clean_evolve+1
 
-			 !if ( abs(energy(sys,st) - energy(sys,ost)) > sys%max_deltaE ) then
-			!	CALL checkTimestep( sys,st,ost,oost,slowfactor,sys%max_deltaE,tini,st_ba )
-			!	nb_clean_evolve=0
-			!	write(*,*) "FAILED ERROR CALCULATION PREPARATION"
-			! end if
-
-			! if (nb_clean_evolve > 4) exit DO_ERR_PREP
-
 		  END DO DO_ERR_PREP
 
 		  err_instant = real( error(sys,oost,ost,st) )
@@ -383,18 +376,21 @@ CONTAINS
 
   END SUBROUTINE
 
-	 !> -------------------------------------------------------------------------
+	  !> -------------------------------------------------------------------------
 	 !> SUBROUTINE: checkTimestep
 	 !> -------------------------------------------------------------------------
+	 !> Purpose / context:
+	 !>   Local error validation routine. Compares the energy of the system across 
+	 !>   successive steps. If the energy drift (deltaE) exceeds `errorlimit`, it 
+	 !>   rewinds the state to a previous backup (`oost_tofix`) and locally refines 
+	 !>   the RK4 integration by increasing `slowfactorFix` (reducing the time step).
 	 !> Arguments:
-	 !>   - sys
-	 !>   - st
-	 !>   - ost
-	 !>   - oost
-	 !>   - slowfactor
-	 !>   - errorlimit
-	 !>   - tini
-	 !>   - st_ba
+	 !>   - sys        : Parameter structure.
+	 !>   - st, ost, oost : Current, old, and older states (t, t-dt, t-2dt).
+	 !>   - slowfactor : Base time-step reduction factor.
+	 !>   - errorlimit : Maximum allowable energy drift.
+	 !>   - tini       : Initial time reference for backtracking.
+	 !>   - st_ba      : Absolute safe backup state in case local rewinding fails.
 	 !>
 	 SUBROUTINE checkTimestep(sys,st,ost,oost,slowfactor,errorlimit,tini,st_ba)
 
@@ -512,16 +508,19 @@ CONTAINS
 
 
 	 END SUBROUTINE
-	 !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
 	 !> SUBROUTINE: checkTimestep_t3
 	 !> -------------------------------------------------------------------------
+	 !> Purpose / context:
+	 !>   Macroscopic error validation routine. Tracks the cumulative energy drift 
+	 !>   over a longer, predefined time horizon (default delta_t = 3.0). 
+	 !>   Operates similarly to `checkTimestep` but mitigates slow, progressive 
+	 !>   integration errors that evade step-by-step local detection.
 	 !> Arguments:
-	 !>   - sys
-	 !>   - st
-	 !>   - ost
-	 !>   - oost
-	 !>   - st_t3
-	 !>   - errorlimit
+	 !>   - sys        : Parameter structure.
+	 !>   - st, ost, oost : Trajectory tracking states.
+	 !>   - st_t3      : Reference state captured 3 time units prior.
+	 !>   - errorlimit : Maximum allowable energy deviation over the interval.
 	 !>
 	 SUBROUTINE checkTimestep_t3(sys,st,ost,oost,st_t3,errorlimit)
 
@@ -657,20 +656,22 @@ CONTAINS
 
   END SUBROUTINE
 
-  !-- Evolution routine --  NOTE: to minimize the number of calculations certain sums are stored in state,
-  !		 therefore after every timestep, these variables are updated with	update_sums.
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: Evolve_RK4
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Perform one Runge–Kutta 4 step by repeated calls to systm:CalcDerivatives.
+  !>   Executes a single step of the standard 4th-order Runge-Kutta integration scheme.
+  !>   Evaluates the variational derivatives via `calcderivatives` at four intermediate 
+  !>   points to calculate the increment for state arrays `f, h, p, q`. Also applies 
+  !>   the free-evolution phase terms `-Ic * sys%w * dt` explicitly to the odd mode 
+  !>   arrays `fo, ho`.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ost
-  !>   - oost
-  !>   - slowfactor
-  !>   - superinverseflag
+  !>   - sys              : Parameter structure.
+  !>   - st               : Current state (updated in place to t+dt)
+  !>   - ost              : Old state (assigned the incoming value of st).
+  !>   - oost             : Older state (assigned the incoming value of ost).
+  !>   - slowfactor       : Divisor applied to the base dt to increase resolution.
+  !>   - superinverseflag : Boolean flag to toggle full/partial inverse calculations in derivatives.
   !>
   SUBROUTINE Evolve_RK4(sys,st,ost,oost,slowfactor,superinverseflag)
 
@@ -752,16 +753,17 @@ CONTAINS
 
   END SUBROUTINE evolve_RK4
 
-  !-- routine to add polarons
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: add_coherent_state
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Increase the variational basis size by appending one additional coherent state.
-  !>   This implements the adaptive-basis strategy described in the paper appendices.
+  !>   Implements basis enlargement for the multi-polaron ansatz. Appends a 
+  !>   new coherent component to the basis to capture scattering complexity. The new 
+  !>   polaron is initialized with vacuum modes (`f` and `h` = 0) and predefined 
+  !>   atomic displacement amplitudes `p0`, adjusting phase based on current parity.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state (reallocated to size np + 1).
   !>
   SUBROUTINE add_coherent_state(sys,st)
 
@@ -814,12 +816,18 @@ CONTAINS
 		print*," "
 
 	 END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: remove_coherent_state
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Reduces the computational overhead by pruning the variational basis. 
+  !>   It searches for two highly overlapping coherent states using `find_biggest_Mnp`, 
+  !>   merges their amplitudes (`p` and `q`), and collapses the state array dimension 
+  !>   by removing the redundant components, resulting in state array `np - 1`.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state (reallocated and compressed to size np - 1).
   !>
   SUBROUTINE remove_coherent_state(sys,st)
 
@@ -827,7 +835,7 @@ CONTAINS
 		type(state), intent(in out)   :: st
 		type(state)					 		:: br_st
 		integer								:: n,p_f,n_f,p_h,n_h
-		real(rl)								::	E1,E2,SZ1,SZ2,SX1,SX2,min_M_f,min_M_h
+		real(rl)							::	E1,E2,SZ1,SZ2,SX1,SX2,min_M_f,min_M_h
 
 		E1 = energy(sys,st)
 		SZ1 = sigmaZ(st)
@@ -893,17 +901,20 @@ CONTAINS
 		!end if
 
 	 END SUBROUTINE
-	 !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
 	 !> SUBROUTINE: find_biggest_Mnp
 	 !> -------------------------------------------------------------------------
+	 !> Purpose / context:
+	 !>   Utility for basis pruning. Iterates over the off-diagonal elements of the 
+	 !>   bosonic overlap matrices (`ov_ff` and `ov_hh`) to identify the pair of polarons 
+	 !>   (i, j) that share the highest quantum overlap, signifying redundancy.
 	 !> Arguments:
-	 !>   - st
-	 !>   - Mnp_f
-	 !>   - n_f
-	 !>   - p_f
-	 !>   - Mnp_h
-	 !>   - n_h
-	 !>   - p_h
+	 !>   - st    : Current state containing the overlap matrices.
+	 !>   - Mnp_f : Output scalar holding the maximum absolute overlap for the 'f' modes.
+	 !>   - n_f, p_f : Output indices of the maximally overlapping pair in 'f'.
+	 !>   - Mnp_h : Output scalar holding the maximum absolute overlap for the 'h' modes.
+	 !>   - n_h, p_h : Output indices of the maximally overlapping pair in 'h'.
 	 !>
 	 SUBROUTINE find_biggest_Mnp(st,Mnp_f,n_f,p_f,Mnp_h,n_h,p_h)
 
@@ -932,14 +943,21 @@ CONTAINS
 
 	 END SUBROUTINE
 
-  !-- Wave-packet filtering rountines
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: filtered_wp_eo
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts the scattered outgoing wavepacket by spatially filtering out 
+  !>   components inside the scattering region (`x < xmin`). Operates in the 
+  !>   Even/Odd parity basis (EO). It transforms the spatial modes back into 
+  !>   momentum space (k-space) and reconstructs the symmetric/antisymmetric 
+  !>   modal arrays (`f, fo, h, ho`)[cite: 58, 59].
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - xmin_in
+  !>   - sys     : Parameter structure.
+  !>   - st      : The full state containing all spatial components.
+  !>   - xmin_in : Optional cutoff spatial coordinate (defaults to `sys%xmin`).
+  !> Return:
+  !>   - Type(state) : A normalized cloned state containing only the filtered wavepacket.
   !>
   FUNCTION filtered_wp_eo(sys,st,xmin_in) 
 
@@ -975,12 +993,20 @@ CONTAINS
 
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: left_going_st_eo
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Extracts only the left-propagating components of the photonic field.
+  !>   It recombines the Even/Odd (EO) basis modal arrays (f, fo, h, ho) to 
+  !>   filter out right-propagating modes, then reconstructs the EO arrays 
+  !>   for the purely left-going state.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure defining the grid and modes.
+  !>   - st  : The full input state from which to extract the left-propagating field.
+  !> Return:
+  !>   - Type(state) : A normalized cloned state containing only the left-going wavepacket.
   !>
   FUNCTION left_going_st_eo(sys,st) 
 
@@ -1006,12 +1032,17 @@ CONTAINS
 
   END FUNCTION
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: remove_gs_fromfile
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Subtracts the bound ground state (GS) from the current state to isolate 
+  !>   the scattered wavepacket. Instead of passing a computed GS, this routine 
+  !>   reads the GS modal arrays directly from a pre-generated data file and 
+  !>   subtracts them from the state arrays `f` and `h`.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state, modified in-place to remove the GS contribution.
   !>
   SUBROUTINE remove_gs_fromfile(sys,st)
 
@@ -1051,14 +1082,20 @@ CONTAINS
 	 st%h = st%h - gs_h
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: remove_gs
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Subtracts an explicitly provided ground state (`gst`) from the current 
+  !>   variational state (`st`). This is typically done prior to evaluating 
+  !>   scattering observables (like reflection/transmission) to ensure the 
+  !>   qubit's bound cloud is not mistakenly counted as free propagating photons.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - gst
-  !>   - out_st
+  !>   - sys    : Parameter structure.
+  !>   - st     : Current total state.
+  !>   - gst    : The bare ground state of the strongly coupled qubit.
+  !>   - out_st : Output state containing only the separated, free-propagating wavepacket. 
   !>
   SUBROUTINE remove_gs(sys,st,gst,out_st)
 
@@ -1076,15 +1113,20 @@ CONTAINS
 
   END SUBROUTINE
 
-	 !== Transmission/reflections funtions DOUBLE LINE
-	 !-- transmitted energy
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: transmission
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the energy transmission coefficient. It computes the total mean 
+  !>   photon number for all positive momentum modes (k > 0) in the final state, 
+  !>   and divides it by the total input energy (mean photon number of the initial 
+  !>   state).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ini_st
+  !>   - sys    : Parameter structure.
+  !>   - st     : The final scattered state (ground state typically removed).
+  !>   - ini_st : The initial input state before scattering.
+  !> Return:
+  !>   - real(rl) : The transmission probability (T).
   !>
   FUNCTION transmission(sys,st,ini_st)
 
@@ -1108,13 +1150,20 @@ CONTAINS
 	 transmission = t_output/input
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> FUNCTION: reflection
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Calculates the energy reflection coefficient. It sums the mean photon 
+  !>   number across all negative momentum modes (k < 0) in the final state, 
+  !>   and normalizes it against the total mean photon number of the initial state.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ini_st
+  !>   - sys    : Parameter structure.
+  !>   - st     : The final scattered state (ground state typically removed).
+  !>   - ini_st : The initial input state before scattering.
+  !> Return:
+  !>   - real(rl) : The reflection probability (R).
   !>
   FUNCTION reflection(sys,st,ini_st)
 
@@ -1145,17 +1194,18 @@ CONTAINS
 
   END FUNCTION
 
-
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_1ph_losses
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes and writes out the single-photon reflection, transmission, and 
+  !>   loss spectra. It isolates the one-photon amplitudes (projected on both 
+  !>   qubit up/down states) within the momentum spread (`k0 +/- sigma`) of the 
+  !>   initial pulse, calculating the inelastic losses strictly in the 1-photon subspace. 
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - ini_st
+  !>   - sys    : Parameter structure (contains file path definitions).
+  !>   - st     : The final scattered state. 
+  !>   - ini_st : The initial input wavepacket. 
   !>
   SUBROUTINE print_1ph_losses(sys,st,ini_st)
 
@@ -1196,21 +1246,19 @@ CONTAINS
 
   END SUBROUTINE
 
-  !=========================================================
-  !== Printing routines
-  !=========================================================
 
-  !== printing the state vector
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_fks
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Writes the momentum-space (k-space) wavepacket amplitudes (`fnk`, `hnk`) 
+  !>   to a text file. It explicitly transforms the symmetric and antisymmetric 
+  !>   Even/Odd modes back into the full negative and positive momentum grid 
+  !>   before writing the real and imaginary components. 
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure.
+  !>   - st    : State object containing the photonic modal arrays.
+  !>   - label : String tag appended to the output filename (e.g., 'fst', 'iwp').
   !>
   SUBROUTINE print_fks(sys,st,label)
 
@@ -1249,16 +1297,18 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_ps
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Writes the qubit/atomic variational parameters (`p` and `q`) to a text file. 
+  !>   These complex amplitudes represent the weight of the qubit's up/down 
+  !>   displacements for each individual polaron in the multi-polaron superposition. 
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure. 
+  !>   - st    : State object containing the `p` and `q` scalar arrays.
+  !>   - label : String tag appended to the output filename. 
   !>
   SUBROUTINE print_ps(sys, st, label)
 
@@ -1283,16 +1333,18 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_fxs
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Writes the spatial (x-space) photonic amplitudes (`fnx`, `hnx`) to a text file. 
+  !>   It maps the momentum modes onto the defined spatial grid `sys%dx`, evaluating 
+  !>   the real and imaginary spatial wavefunctions for all polarons. 
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure defining the spatial grid `dx`. 
+  !>   - st    : State object to be evaluated.
+  !>   - label : String tag appended to the output filename. 
   !>
   SUBROUTINE print_fxs(sys,st,label)
 
@@ -1331,17 +1383,18 @@ CONTAINS
 
   END SUBROUTINE
 
-  !== printing MEAN PHOTON NUMBERS
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_nk_EO
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes and outputs the mean photon number momentum spectrum (n_k). 
+  !>   It writes the total photon number, as well as the spin-projected 
+  !>   (qubit up and qubit down) photon numbers across both negative and 
+  !>   positive frequency axes. 
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure. 
+  !>   - st    : Current state object. 
+  !>   - label : String tag appended to the output filename. 
   !>
   SUBROUTINE print_nk_EO(sys,st,label) 
 
@@ -1380,16 +1433,19 @@ CONTAINS
 	 close(105)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_nk_EO_k0
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes and outputs the momentum-space mean photon number (n_k), similar 
+  !>   to `print_nk_EO`, but selectively zeroes out or flags modes outside a defined 
+  !>   bandwidth (k0 +/- 2*sigma) around the central wavepacket momentum. 
+  !>   Useful for isolating the signal within the primary excitation bandwidth.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure defining the momentum grid (w, dk1) and k0.
+  !>   - st    : State object containing the multi-polaron amplitudes.
+  !>   - label : String tag appended to the output filename.
   !>
   SUBROUTINE print_nk_EO_k0(sys,st,label) 
 
@@ -1461,17 +1517,19 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_nx_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates and writes the spatial photon density distribution, n(x). 
+  !>   It projects the symmetric (Even) and antisymmetric (Odd) momentum modes 
+  !>   back into real space to compute the local photon number expectation value 
+  !>   at each spatial grid point.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - makefilename
+  !>   - sys          : Parameter structure defining the spatial grid (dx).
+  !>   - st           : State object evaluated at the current time.
+  !>   - label        : String tag for the standard data filename or frame index.
+  !>   - makefilename : Optional flag to toggle output to the dedicated directory.
   !>
   SUBROUTINE print_nx_eo(sys,st,label,makefilename) 
 
@@ -1515,18 +1573,19 @@ CONTAINS
 
   END SUBROUTINE
 
-  !== printing the g2 functions
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_g2
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes the spatially resolved second-order optical coherence function, 
+  !>   g2(x1, x2). This measures two-photon spatial correlations (photon bunching 
+  !>   or antibunching). Fixes coordinate x1 and scans x2 across a specified range, 
+  !>   evaluating expectation values of creation/annihilation operator pairs.
   !> Arguments:
-  !>   - sys
-  !>   - x1
-  !>   - x2
-  !>   - st
+  !>   - sys : Parameter structure defining grid spacing.
+  !>   - x1  : The fixed reference spatial coordinate.
+  !>   - x2  : A reference coordinate used to define the scanning boundary (imin to imax).
+  !>   - st  : Current state object containing the photonic fields.
   !>
   SUBROUTINE print_g2(sys,x1,x2,st)
 
@@ -1590,16 +1649,18 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_g2_0
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes the equal-position second-order coherence function, g2(x, x), 
+  !>   across the entire spatial grid. It quantifies the probability of finding 
+  !>   two photons at the exact same location, decomposed into contributions 
+  !>   from the symmetric (f) and antisymmetric (h) fields.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure.
+  !>   - st    : State object to evaluate.
+  !>   - label : String tag appended to the output filename.
   !>
   SUBROUTINE print_g2_0(sys,st, label)
 
@@ -1647,16 +1708,19 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_g2_0fh
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   An alternative evaluation of the equal-position coherence g2(x, x) that 
+  !>   computes the raw combined field intensity correlations without decomposing 
+  !>   the normalization strictly by symmetric/antisymmetric terms in the output.
+  !>   Can initialize an Even/Odd state from file if `st_in` is not provided.
   !> Arguments:
-  !>   - sys
-  !>   - st_in
-  !>   - label
+  !>   - sys   : Parameter structure.
+  !>   - st_in : Optional input state object; if absent, state is loaded from file.
+  !>   - label : String tag appended to the output filename.
   !>
   SUBROUTINE print_g2_0fh(sys,st_in, label)
 
@@ -1705,17 +1769,18 @@ CONTAINS
 
   END SUBROUTINE
 
-  !== print photon decompositions TO UPDATE FOR UP AND DOWN
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_2ph_prob_kk_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the two-photon momentum probability distribution, P(k1, k2). 
+  !>   Outputs the normalized squared amplitudes of the multi-polaron state 
+  !>   projected onto the two-photon Fock basis, resolving inelastic scattering 
+  !>   where a single high-energy photon splits into two lower-energy ones.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure detailing the momentum grid ranges.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename.
   !>
   SUBROUTINE print_2ph_prob_kk_eo(sys,st,label)
 
@@ -1749,16 +1814,19 @@ CONTAINS
 	 end do
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_2ph_prob_kk_eo_PY
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Identical physics context to `print_2ph_prob_kk_eo` (two-photon momentum 
+  !>   spectra), but the output text file is explicitly formatted as a 2D matrix 
+  !>   with axis headers. This matrix format is directly usable by Python's 
+  !>   matplotlib or numpy (e.g., for `imshow` or `contourf` plotting).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename (suffixed with '_PY').
   !>
   SUBROUTINE print_2ph_prob_kk_eo_PY(sys,st,label)
 
@@ -1802,16 +1870,19 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_2ph_prob_xx_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the two-photon spatial probability distribution, P(x1, x2). 
+  !>   Transforms the multi-polaron representation into the spatial two-photon 
+  !>   Fock basis to analyze relative coordinate clustering (e.g., bound photon 
+  !>   molecules) in real space.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure defining the spatial grid boundaries and dx.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename.
   !>
   SUBROUTINE print_2ph_prob_xx_eo(sys,st,label)
 
@@ -1846,16 +1917,18 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_2ph_prob_xx_eo_PY
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Identical physics context to `print_2ph_prob_xx_eo` (two-photon spatial 
+  !>   distribution), but reorganizes the output data into a grid-matrix format 
+  !>   with coordinate headers for native ingestion into Python plotting routines.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename (suffixed with '_PY').
   !>
   SUBROUTINE print_2ph_prob_xx_eo_PY(sys,st,label)
 
@@ -1896,17 +1969,20 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_3ph_prob_kk_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the three-photon momentum probability distribution. Because 
+  !>   visualizing a 3D parameter space (k1, k2, k3) is complex, this routine 
+  !>   fixes one of the photon momenta (k3, derived from `w_in`) and plots a 2D 
+  !>   slice mapping the remaining coordinates k1 and k2. Includes combinatoric 
+  !>   multipliers to account for particle permutations.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - w_in
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename.
+  !>   - w_in  : The specified frequency (momentum) of the fixed third photon (k3).
   !>
   SUBROUTINE print_3ph_prob_kk_eo(sys,st,label,w_in)
 
@@ -1966,17 +2042,20 @@ CONTAINS
 	 close(100)
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_3ph_prob_kk_eo_PY
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Identical physics context to `print_3ph_prob_kk_eo` (three-photon momentum 
+  !>   spectra evaluated by fixing the third photon's momentum k3). This version 
+  !>   formats the output text file as a 2D matrix with explicit axis headers 
+  !>   to allow seamless direct ingestion by Python (e.g., matplotlib/numpy).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - w_in
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename (suffixed with '_PY').
+  !>   - w_in  : The specified momentum/frequency of the fixed third photon (k3).
   !>
   SUBROUTINE print_3ph_prob_kk_eo_PY(sys,st,label,w_in)
 
@@ -2041,17 +2120,19 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_3ph_prob_xx_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the three-photon spatial probability distribution, P(x1, x2, x3). 
+  !>   Fixes one spatial coordinate (x3) and computes the 2D spatial correlation 
+  !>   matrix for the remaining two photons across the real-space grid. Includes 
+  !>   combinatorial factors to account for bosonic coordinate permutations.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - x_in
+  !>   - sys   : Parameter structure defining the spatial grid `dx`.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename.
+  !>   - x_in  : The fixed spatial coordinate for the third photon (x3).
   !>
   SUBROUTINE print_3ph_prob_xx_eo(sys,st,label,x_in)
 
@@ -2113,17 +2194,19 @@ CONTAINS
 
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_3ph_prob_xx_eo_PY
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Identical physics context to `print_3ph_prob_xx_eo` (three-photon spatial 
+  !>   distribution mapped over x1 and x2 for a fixed x3). It explicitly reformats 
+  !>   the output into a 2D grid-matrix with spatial headers for Python integration.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - x_in
+  !>   - sys   : Parameter structure.
+  !>   - st    : Current state object.
+  !>   - label : String tag appended to the output filename (suffixed with '_PY').
+  !>   - x_in  : The fixed spatial coordinate for the third photon (x3).
   !>
   SUBROUTINE print_3ph_prob_xx_eo_PY(sys,st,label,x_in)
 
@@ -2187,18 +2270,20 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_4ph_prob_kk_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the four-photon momentum probability distribution. Maps a 2D 
+  !>   slice of the 4D parameter space by fixing the momenta of two outgoing 
+  !>   photons (k3 and k4) and calculating the normalized squared amplitudes 
+  !>   for the remaining two variables (k1 and k2).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - w_in_1
-  !>   - w_in_2
+  !>   - sys    : Parameter structure.
+  !>   - st     : Current state object.
+  !>   - label  : String tag appended to the output filename.
+  !>   - w_in_1 : Frequency/momentum for the fixed third photon (k3).
+  !>   - w_in_2 : Frequency/momentum for the fixed fourth photon (k4).
   !>
   SUBROUTINE print_4ph_prob_kk_eo(sys,st,label,w_in_1,w_in_2)
 
@@ -2253,17 +2338,19 @@ CONTAINS
 
   END SUBROUTINE
 
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_nphk_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Computes the full momentum-space photonic decomposition of the scattered 
+  !>   wavepacket. It recursively projects the state onto N-photon Fock sub-spaces 
+  !>   (up to an optional `max_number`) and writes the individual 1-photon, 2-photon, 
+  !>   etc. spectral contributions, alongside their sum to verify energy conservation.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - max_number
+  !>   - sys        : Parameter structure.
+  !>   - st         : Current state object.
+  !>   - label      : String tag appended to the output filename.
+  !>   - max_number : Optional upper limit for the N-photon subspace evaluation.
   !>
   SUBROUTINE print_nphk_eo(sys,st,label,max_number)
 
@@ -2333,17 +2420,20 @@ CONTAINS
 	 print*," "
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_nphx_eo
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Calculates the real-space spatial photonic density decomposition. It maps 
+  !>   the separate N-photon projected states onto the spatial grid `x` to show 
+  !>   where single-photon vs. multi-photon bound packets are spatially localized.
+  !>   (Note: Output flags suggest this routine is currently under development).
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - label
-  !>   - max_number
+  !>   - sys        : Parameter structure defining the spatial grid `dx`.
+  !>   - st         : Current state object.
+  !>   - label      : String tag appended to the output filename.
+  !>   - max_number : Optional upper limit for the N-photon subspace evaluation.
   !>
   SUBROUTINE print_nphx_eo(sys,st,label,max_number)
 
@@ -2428,14 +2518,18 @@ CONTAINS
 
   END SUBROUTINE
 
-  !== photon destruciton routines
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: destroy_photon
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Applies the real-space bosonic annihilation operator `a(x)` to the current 
+  !>   variational state at a specific coordinate `x`. Modifies the qubit/atomic 
+  !>   amplitudes `p(n)` across all coherent polarons based on their local spatial 
+  !>   field amplitudes `fnx`.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - x
+  !>   - sys : Parameter structure defining the grid.
+  !>   - st  : State object evaluated and updated in-place.
+  !>   - x   : The spatial coordinate targeted for photon annihilation.
   !>
   SUBROUTINE destroy_photon(sys,st,x)
 
@@ -2458,14 +2552,20 @@ CONTAINS
 
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: destroy_photon_2
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Applies a spatially smeared annihilation operator over a region defined by 
+  !>   `delta_x` centered at coordinate `x`. After localized photon destruction, 
+  !>   it immediately renormalizes the full multi-polaron state to restore valid 
+  !>   quantum probability amplitudes.
   !> Arguments:
-  !>   - sys
-  !>   - st
-  !>   - x
-  !>   - delta_x
+  !>   - sys     : Parameter structure.
+  !>   - st      : State object evaluated and updated in-place.
+  !>   - x       : Central spatial coordinate for photon annihilation.
+  !>   - delta_x : Integration/smearing width over which the photon is destroyed.
   !>
   SUBROUTINE destroy_photon_2(sys,st,x,delta_x)
 
@@ -2492,12 +2592,17 @@ CONTAINS
 
   END SUBROUTINE
 		  
-  !-- GIF routines
-  !> -------------------------------------------------------------------------
+!> -------------------------------------------------------------------------
   !> FUNCTION: gif_dirname
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Utility function that constructs and returns the specific directory path 
+  !>   used to store the individual frames and gnuplot scripts generated during 
+  !>   GIF animation routines.
   !> Arguments:
-  !>   - sys
+  !>   - sys : Parameter structure containing base file paths and parameter character tags.
+  !> Return:
+  !>   - character(len=200) : Formatted directory path string.
   !>
   FUNCTION gif_dirname(sys)
 
@@ -2507,11 +2612,17 @@ CONTAINS
 	 gif_dirname=trim(adjustl(sys%file_path))//"/gif_"//trim(adjustl(parameterchar(sys)))
 
   END FUNCTION
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: open_gif_files
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Utility setup for real-time visual diagnostics. Initializes the animation 
+  !>   directory, constructs the persistent Gnuplot script (`gif_fxs.gnu`) defining 
+  !>   the plotting bounds and styles, and writes the initial bash script (`gif_fxs.sh`) 
+  !>   for ImageMagick conversion.
   !> Arguments:
-  !>   - sys
+  !>   - sys : Parameter structure.
   !>
   SUBROUTINE open_gif_files(sys)
 
@@ -2558,11 +2669,16 @@ CONTAINS
 	 !		  write(30000, * ) 
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: end_of_GIF
   !> -------------------------------------------------------------------------
+  !> Purpose / context:
+  !>   Finalizes the animation export process. Appends the ImageMagick `-loop 0` 
+  !>   commands to the bash scripts to stitch the sequential PNG files into a 
+  !>   continuous looping GIF, and closes out the active file handles.
   !> Arguments:
-  !>   - sys
+  !>   - sys : Parameter structure.
   !>
   SUBROUTINE end_of_GIF(sys)
 	 
@@ -2581,15 +2697,18 @@ CONTAINS
 	 end if
 
   END SUBROUTINE
-  !> -------------------------------------------------------------------------
+
+!> -------------------------------------------------------------------------
   !> SUBROUTINE: print_gif_image
   !> -------------------------------------------------------------------------
   !> Purpose / context:
-  !>   Write an observable / diagnostic to a text file (in the `data/` folder).
-  !>   The filename is generally parameter-tagged to support parameter sweeps.
+  !>   Core animation frame generator. Called periodically during the time-evolution 
+  !>   loop (controlled by an adaptive threshold `t_gifplot`). Calculates the spatial 
+  !>   wavepacket density via `print_nx_eo` and dynamically appends plot rendering 
+  !>   commands to the active Gnuplot scripts for the current time step.
   !> Arguments:
-  !>   - sys
-  !>   - st
+  !>   - sys : Parameter structure.
+  !>   - st  : Current state object representing the snapshot at time `t`.
   !>
   SUBROUTINE print_gif_image(sys,st)
 
@@ -2674,1310 +2793,6 @@ CONTAINS
 	  end if
 
   END SUBROUTINE
-
-  !====================================
-  !-- update required
-  !===================================
   
-  !-- calculate the susceptibility of the qubit
 
 END MODULE output
-
-
-
-  !SUBROUTINE print_info(sys,st,fnb) 
-
-  !  type(param), intent(in)			  	::  sys
-  !  type(state), intent(in)				::  st
-  !  integer, intent(in)						::  fnb
-
-  !  write(fnb,'(a15,2f4.2,I6)') "al, del, nmode = ", sys%alpha, sys%del, sys%nmode
-  !  write(fnb,'(a8,f8.4)') "n_cloud = ", n_up_x(sys,st,0._rl,sys%xmin)
-  !  write(fnb,'(a8,f8.4)') "n_wp = ", n_up_x(sys,st,sys%xmin,sys%wigxmax)
-  !  write(fnb,'(a25,f20.11)') "n_tot (in k-space) = ", n_up(sys,st)
-  !  write(fnb,'(a25,f20.11)') "n_tot (in x-space) = ", n_up_x(sys,st)
-  !  write(*,'(a15,2f4.2,I6)') "al, del, nmode = ", sys%alpha, sys%del, sys%nmode
-  !  write(*,'(a11,f8.4)') "n_cloud = ", n_up_x(sys,st,0._rl,sys%xmin)
-  !  write(*,'(a11,f8.4)') "n_wp = ", n_up_x(sys,st,sys%xmin,sys%wigxmax)
-  !  write(*,'(a11,f8.4)') "n_tot = ", n_up(sys,st)
-
-  !END SUBROUTINE
-  !SUBROUTINE sum_3ph_xx_eo(sys,st,tmp)
-
-  !  type(param), intent(in)      		::  sys
-  !  type(state), intent(in)				::  st
-  !  type(state)								::  upst
-  !  character(len=300)					   ::  name_numbst,i3_char
-  !  integer							 			::  i1,i2,i3,i
-  !  complex(cx)								::  three_ph_amp( -sys%nmode+1 : sys%nmode , -sys%nmode+1 : sys%nmode )
-  !  integer										::  factor
-  !  real(rl), intent(out)					::  tmp
-
-  !  upst = st
-  !  upst%q(:) = 0._cx
-  !  CALL normalise(upst)
-
-
-  !  tmp = 0._cx
-  !  do i3=-sys%nmode+1,sys%nmode
-
-  ! 	three_ph_amp = three_photon_xx_amp_up(sys,upst,i3)
-  ! 	print*,"i3=", i3
-
-  ! 	do i1=-sys%nmode+1,sys%nmode
-
-  ! 	  do i2=-sys%nmode+1, sys%nmode
-
-  ! 		 !-- adding a factor to account for the permutations for i3
-  ! 		 if ( ( (i3==i2) .and. (i2 .ne. i1) ) &
-  ! 			.or. ( (i3==i1) .and. (i1 .ne. i2) ) ) then
-  ! 			factor = 2
-  ! 		 else if  ( (i1 .ne. i2) .and. (i1 .ne. i3) ) then
-  ! 			factor = 3
-  ! 		 end if
-
-  ! 		 tmp = tmp + factor * abs( three_ph_amp(i1,i2) )**2 / (sys%dx)**3
-
-  ! 	  end do
-
-  ! 	end do
-
-  !  end do
-
-  !  print*,"3"
-
-
-  !END SUBROUTINE
-
-  !FUNCTION inelastic(sys,st,initial_st,eta)
-
-  !  type(param),intent(in) 					 		  ::  sys
-  !  type(state),intent(in)						 		  ::  st, initial_st
-  !  real(rl), intent(in)						 		  ::  eta
-  !  type(state)									 		  ::  upst,upst_ini
-  !  real(rl)										 		  ::  inelastic
-  !  real(rl)										 		  ::  ine_output,input
-  !  real(rl) ,dimension(-sys%nmode+1:sys%nmode)   ::  nk_ini,nk_ine, w
-  !  complex(cx)					  				 		  ::  sum_k, tmp
-  !  integer							 				 		  ::  n,m,i,k
-  !  real(rl)										 		  ::  kmin, kmax
-
-  !  kmin = sys%k0 - eta * 2*pi*sys%sigma
-  !  kmax = sys%k0 + eta * 2*pi*sys%sigma
-
-  !  upst = st
-  !  upst_ini = initial_st
-  !  upst%q(:) = 0._cx
-  !  upst_ini%q(:) = 0._cx
-  !  CALL normalise(upst)
-  !  CALL normalise(upst_ini)
-
-  !  nk_ini = 0._rl
-  !  nk_ine = 0._rl
-
-  !  do k=-sys%nmode+1, 0
-  !  	w(k) = sys%w(abs(k-1))
-  !  end do
-  !  do k=1, sys%nmode
-  ! 	w(k) = sys%w(k)
-  !  end do
-
-  !  nk_ini = n_up_k_eo(sys,upst_ini)
-  !  nk_ine = n_up_k_eo(sys,upst)
-  !  nk_ine(  : -int(0.9*sys%wmax/sys%dk1) ) = 0._rl
-  !  nk_ine( int(0.9*sys%wmax/sys%dk1) : ) = 0._rl
-  !  nk_ine( int(kmin/sys%dk1) : int(kmax/sys%dk1)+1 ) = 0._rl
-  !  nk_ine( -int(kmax/sys%dk1)+1 : -int(kmin/sys%dk1)+1 ) = 0._rl
-
-
-  !  input = sum( w(1:sys%nmode) * nk_ini(1:sys%nmode) )
-  !  ine_output = sum( w(:) * nk_ine(:) )
-
-  !  inelastic = ine_output/input
-
-  !END FUNCTION
-  !FUNCTION inelastic_n(sys,st,initial_st,eta)
-
-  !  type(param),intent(in) 					 		  ::  sys
-  !  type(state),intent(in)						 		  ::  st, initial_st
-  !  real(rl), intent(in)						 		  ::  eta
-  !  type(state)									 		  ::  upst,upst_ini
-  !  real(rl)										 		  ::  inelastic_n
-  !  real(rl)										 		  ::  ine_output,input
-  !  real(rl) ,dimension(-sys%nmode+1:sys%nmode)   ::  nk_ini,nk_ine, w
-  !  complex(cx)					  				 		  ::  sum_k, tmp
-  !  integer							 				 		  ::  n,m,i,k
-  !  real(rl)										 		  ::  kmin, kmax
-
-  !  kmin = sys%k0 - eta * 2*pi*sys%sigma
-  !  kmax = sys%k0 + eta * 2*pi*sys%sigma
-
-  !  upst = st
-  !  upst_ini = initial_st
-  !  upst%q(:) = 0._cx
-  !  upst_ini%q(:) = 0._cx
-  !  CALL normalise(upst)
-  !  CALL normalise(upst_ini)
-
-  !  nk_ini = 0._rl
-  !  nk_ine = 0._rl
-
-  !  nk_ini = n_up_k_eo(sys,upst_ini)
-  !  nk_ine = n_up_k_eo(sys,upst)
-  !  nk_ine(  : -int(0.9*sys%wmax/sys%dk1) ) = 0._rl
-  !  nk_ine( int(0.9*sys%wmax/sys%dk1) : ) = 0._rl
-  !  nk_ine( int(kmin/sys%dk1) : int(kmax/sys%dk1)+1 ) = 0._rl
-  !  nk_ine( -int(kmax/sys%dk1)+1 : -int(kmin/sys%dk1)+1 ) = 0._rl
-
-
-  !  input = sum( nk_ini(1:sys%nmode) )
-  !  ine_output = sum( nk_ine(:) )
-
-  !  inelastic_n = ine_output/input
-
-  !END FUNCTION
-  !SUBROUTINE print_inelastic(sys,st,eta)
-
-  !  type(param),intent(in) 					 		  ::  sys
-  !  type(state),intent(in)						 		  ::  st
-  !  real(rl), intent(in)						 		  ::  eta
-  !  type(state)									 		  ::  upst, upst_ini
-  !  real(rl)										 		  ::  inelastic
-  !  real(rl)										 		  ::  ine_output, input
-  !  real(rl), dimension(-sys%nmode+1:sys%nmode)   ::  nk_ini, nk_ine, w
-  !  integer							 				 		  ::  n, m, i, k
-  !  real(rl)										 		  ::  kmin, kmax, tmp
-  !  character(len=200)									  ::  filename, xminchar, etachar
-
-  !  kmin = sys%k0 - eta *sys%sigma
-  !  kmax = sys%k0 + eta *sys%sigma
-
-  !  upst = st
-  !  upst%q(:) = 0._cx
-  !  CALL normalise(upst)
-
-  !  nk_ine = 0._rl
-
-  !  do k=-sys%nmode+1, 0
-  !  	w(k) = -sys%w(abs(k-1))
-  !  end do
-  !  do k=1, sys%nmode
-  ! 	w(k) = sys%w(k)
-  !  end do
-
-  !  nk_ine = n_up_k_eo(sys,upst)
-  !  nk_ine( int(kmin/sys%dk1) : int(kmax/sys%dk1)+1 ) = 0._rl
-  !  nk_ine( -int(kmax/sys%dk1)+1 : -int(kmin/sys%dk1)+1 ) = 0._rl
-
-  !  write(xminchar, '(I5)') int(sys%xmin)
-  !  write(etachar, '(f3.1)') eta
-  !  filename=trim(adjustl(sys%file_path))//"/nk_INE"//"_"&
-  ! 	//trim(adjustl(etachar))//"_"&
-  ! 	//trim(adjustl(parameterchar(sys)))//"_"&
-  ! 	//trim(adjustl(xminchar))//".d"
-  !  open (unit=100,file= filename,action="write",status="replace")
-
-  !  do i=-sys%nmode+1, sys%nmode
-  ! 	tmp=nk_ine(i)/sys%dk1
-  ! 	write(100,'(f25.10,f25.15)') w(i), tmp
-  !  end do
-  !  close(100)
-
-  !END SUBROUTINE
-
-!
-!  SUBROUTINE FT_spinZ(sys,st)
-!
-!	 type(param), intent(in)		 ::  sys
-!	 type(state), intent(in out)	 ::  st
-!	 real(rl),dimension(st%i_time) ::  t_array, spinZ_array, spinY_array, spinX_array
-!	 integer								 ::  i
-!
-!!	 t_array = st%spinXYZ(1:st%i_time,1)
-!!	 spinX_array = st%spinXYZ(1:st%i_time,2)
-!!	 spinY_array = st%spinXYZ(1:st%i_time,3)
-!!	 spinZ_array = st%spinXYZ(1:st%i_time,4)
-!!
-!!	 do i=1, sys%nmode
-!!		st%spinXYZ(i,5) = sys%dt * sum( cos( sys%w(i)*t_array(:) ) * spinX_array(:) )
-!!		st%spinXYZ(i,6) = sys%dt * sum( sin( sys%w(i)*t_array(:) ) * spinY_array(:) )
-!!		st%spinXYZ(i,7) = sys%dt * sum( cos( sys%w(i)*t_array(:) ) * spinZ_array(:) )
-!!	 end do
-!
-!  END SUBROUTINE
-!!
-!  SUBROUTINE print_g2_using_dwonst_upst(sys,x1,x2,st_in)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in),optional	::  st_in
-!	 type(state)								::  upst,dwst,st
-!	 real(rl)									::  g2_f, g2_h, xlength
-!	 real(rl),intent(in)						::  x1,x2
-!	 integer								   	::  i1,i2,i,m,n,imin,imax
-!	 complex(cx)								::  tmp_f,tmp_f2,tmp_f3,tmp_h,tmp_h2,tmp_h3
-!	 complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 complex(cx)								::  hnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_g2, x1char
-!
-!	 if (present(st_in)) then
-!		st = st_in	
-!	 else
-!		CALL allocate_state(sys,st,sys%npini+sys%npadd)
-!		CALL initialise_from_file_eo(sys,st)
-!	 end if
-!
-!	 write(x1char,'(I10)') int(x1)
-!	 print*, "x1",x1char
-!	 name_g2=trim(adjustl(sys%file_path))//"/g2_"//trim(adjustl(x1char))//"_"//&
-!				  	 trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100, file= name_g2, action="write",status="replace")
-!
-!	 i1 =  int( x1 / sys%dx + 0.5_rl)
-!	 i2 =  int( x2 / sys%dx + 0.5_rl)
-!	 !imin = min(i1,i2)
-!	 !imax = max(i1,i2)
-!	 imin = i1 - abs(i1-i2)
-!	 imax = i1 + abs(i1-i2)
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 fnx = f_nx_eo(sys,st)
-!
-!	 dwst = st
-!	 dwst%p(:) = 0._cx
-!	 CALL normalise(dwst)
-!	 hnx = h_nx_eo(sys,st)
-!
-!	 do i=imin, imax
-!
-!		tmp_f = 0._cx
-!		tmp_f2= 0._cx
-!		tmp_f3= 0._cx
-!		tmp_h = 0._cx
-!		tmp_h2= 0._cx
-!		tmp_h3= 0._cx
-!		do n=1,upst%np
-!		  do m=1,upst%np
-!			 tmp_f = tmp_f + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*conjg(fnx(m,i))*fnx(n,i)*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp_f2 = tmp_f2 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp_f3 = tmp_f3 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i))*fnx(n,i)*upst%ov_ff(m,n)
-!
-!			 tmp_h = tmp_h + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i1))*conjg(hnx(m,i))*hnx(n,i)*hnx(n,i1)*ov( hnx(m,:) , hnx(n,:))!*dwst%ov_hh(m,n)
-!			 tmp_h2 = tmp_h2 + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i1))*hnx(n,i1)*ov( hnx(m,:) , hnx(n,:))!dwst%ov_hh(m,n)
-!			 tmp_h3 = tmp_h3 + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i))*hnx(n,i)*ov( hnx(m,:) , hnx(n,:))!dwst%ov_hh(m,n)
-!		  end do
-!		end do
-!
-!		g2_f = real(tmp_f)/(real(tmp_f2)*real(tmp_f3))
-!		g2_h = real(tmp_h)/(real(tmp_h2)*real(tmp_h3))
-!
-!		write(100,'(4f25.15)') dble(i-i1)*sys%dx,0.5_rl*(g2_f+g2_h), g2_f, g2_h
-!
-!	 end do
-!
-!	 close(100)
-!
-!  END SUBROUTINE
-!  SUBROUTINE interpolate_array(sys,arr,min_index, max_index)
-!
-!  type(param), intent(in)			::  sys
-!	 real(rl), intent(in out)   ::   arr(-sys%nmode+1:sys%nmode)
-!	 integer, intent(in)			 ::   min_index, max_index
-!	 integer							 ::   k,i,j
-!
-!	 k = min_index
-!	 
-!	 !print*,"k1_eff=-98",arr(-98)
-!	 MAIN_DO: DO
-!
-!		!print*,"k=",k,arr(k)
-!	 	k= k+1
-!		if ( k >= max_index ) exit MAIN_DO
-!
-!		IF ( arr(k) < -1.e-9_rl ) THEN
-!		  !print*,"   i=",i
-!
-!		  i=0
-!		  SUB_DO: DO
-!		  	 i=i+1
-!			 if ( arr(k+i) > 0._rl ) exit SUB_DO
-!			 if ( k+i == max_index ) exit MAIN_DO
-!		  END DO SUB_DO
-!
-!		  do j=0,i-1
-!			 arr(k+j) = arr(k-1) + (j+1)*( arr(k+i) - arr(k-1) )/dble(i+1)
-!		  end do
-!
-!		  k=k+i
-!
-!		END IF
-!
-!
-!	 END DO MAIN_DO
-!
-!  END SUBROUTINE
-!  !SUBROUTINE print_g_squeezing(sys,x1,x2,st_in)
-
-  !  type(param), intent(in)   			::  sys
-  !  type(state), intent(in),optional	::  st_in
-  !  type(state)								::  upst,st
-  !  real(rl)									::  g2, xlength
-  !  real(rl),intent(in)						::  x1,x2
-  !  integer								   	::  i1,i2,i,m,n,imin,imax
-  !  complex(cx)								::  tmp,tmp2,tmp3
-  !  complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-  !  character(len=300)					   ::  name_gs, x1char
-
-  !  if (present(st_in)) then
-  ! 	st = st_in	
-  !  else
-  ! 	CALL allocate_state(sys,st,sys%npini+sys%npadd)
-  ! 	CALL initialise_from_file_eo(sys,st)
-  !  end if
-
-  !  write(x1char,'(I10)') int(x1)
-  !  name_gs=trim(adjustl(sys%file_path))//"/gsq_"//trim(adjustl(x1char))//"_"//&
-  ! 			  	 trim(adjustl(parameterchar(sys)))//".d"
-  !  open (unit=100, file= name_gs, action="write",status="replace")
-
-  !  i1 = int( x1 / sys%dx )
-  !  i2 = int( x2 / sys%dx )
-  !  imin = min(i1,i2)
-  !  imax = max(i1,i2)
-
-  !  upst = st
-  !  upst%q(:) = 0._cx
-  !  CALL normalise(upst)
-  !  fnx = f_nx_eo(sys,st)
-
-  !  do i=imin, imax
-
-  ! 	tmp = 0._cx
-  ! 	tmp2= 0._cx
-  ! 	tmp3= 0._cx
-  ! 	do n=1,upst%np
-  ! 	  do m=1,upst%np
-  ! 		 tmp = tmp + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*conjg(fnx(m,i1))*fnx(n,i)*fnx(n,i)*upst%ov_ff(m,n)
-  ! 		 tmp2 = tmp2 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*conjg(fnx(n,i1))*upst%ov_ff(m,n)
-
-  ! 		 tmp3 = tmp3 + conjg(upst%p(m))*upst%p(n)*fnx(m,i)*fnx(n,i)*upst%ov_ff(m,n)
-  ! 	  end do
-  ! 	end do
-
-  ! 	write(100,'(2f25.15)') abs(dble(i-i1)*sys%dx), real(tmp)/(real(tmp2)*real(tmp3))
-
-  !  end do
-
-  !  close(100)
-
-  !END SUBROUTINE
-!  SUBROUTINE print_g1(sys,x1,x2,st_in)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in),optional	::  st_in
-!	 type(state)								::  upst,dwst,st
-!	 real(rl)									::  g1_f, g1_h, xlength
-!	 real(rl),intent(in)						::  x1,x2
-!	 integer								   	::  i1,i2,i,m,n,imin,imax
-!	 complex(cx)								::  tmp_f,tmp_h
-!	 complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 complex(cx)								::  hnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_g1, x1char
-!
-!	 if (present(st_in)) then
-!		st = st_in	
-!	 else
-!		CALL allocate_state(sys,st,sys%npini+sys%npadd)
-!		CALL initialise_from_file_eo(sys,st)
-!	 end if
-!
-!	 write(x1char,'(I10)') int(x1)
-!	 name_g1=trim(adjustl(sys%file_path))//"/g1_"//trim(adjustl(x1char))//"_"//&
-!				  	 trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100, file= name_g1, action="write",status="replace")
-!
-!	 i1 =  int( x1 / sys%dx )
-!	 i2 =  int( x2 / sys%dx )
-!	 !imin = min(i1,i2)
-!	 !imax = max(i1,i2)
-!	 imin = i1 - abs(i1-i2)
-!	 imax = i1 + abs(i1-i2)
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 fnx = f_nx_eo(sys,st)
-!
-!	 dwst = st
-!	 dwst%p(:) = 0._cx
-!	 CALL normalise(dwst)
-!	 hnx = h_nx_eo(sys,st)
-!
-!	 do i=imin, imax
-!
-!		tmp_f = 0._cx
-!		tmp_h = 0._cx
-!
-!		do n=1,upst%np
-!		  do m=1,upst%np
-!			 tmp_f = tmp_f + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i))*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp_h = tmp_h + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i))*hnx(n,i1)*ov( hnx(m,:) , hnx(n,:))!*dwst%ov_hh(m,n)
-!		  end do
-!		end do
-!
-!		if (i==i1) then
-!		  print*, "i1= ",i1
-!		  print*, "g1= ",tmp_f
-!		end if
-!
-!		g1_f = real(tmp_f)/sys%dx
-!		g1_h = real(tmp_h)/sys%dx
-!
-!		write(100,'(4f25.15)') dble(i-i1)*sys%dx,0.5_rl*(g1_f+g1_h), g1_f, g1_h
-!
-!	 end do
-!
-!	 close(100)
-!
-!  END SUBROUTINE
-!  SUBROUTINE print_g2_h(sys,x1,x2,st_in)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in),optional	::  st_in
-!	 type(state)								::  dwst,st
-!	 real(rl)									::  g2, xlength
-!	 real(rl),intent(in)						::  x1,x2
-!	 integer								   	::  i1,i2,i,m,n,imin,imax
-!	 complex(cx)								::  tmp,tmp2,tmp3
-!	 complex(cx)								::  hnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_g2, x1char
-!
-!	 if (present(st_in)) then
-!		st = st_in	
-!	 else
-!		CALL allocate_state(sys,st,sys%npini+sys%npadd)
-!		CALL initialise_from_file_eo(sys,st)
-!	 end if
-!
-!	 write(x1char,'(I10)') int(x1)
-!	 name_g2=trim(adjustl(sys%file_path))//"/g2h_"//trim(adjustl(x1char))//"_"//&
-!				  	 trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100, file= name_g2, action="write",status="replace")
-!
-!	 i1 =  int( x1 / sys%dx )
-!	 i2 =  int( x2 / sys%dx )
-!	 imin = min(i1,i2)
-!	 imax = max(i1,i2)
-!
-!	 dwst = st
-!	 dwst%p(:) = 0._cx
-!	 CALL normalise(dwst)
-!	 hnx = h_nx_eo(sys,st)
-!
-!
-!	 do i=imin, imax
-!
-!		tmp = 0._cx
-!		tmp2= 0._cx
-!		tmp3= 0._cx
-!		do n=1,dwst%np
-!		  do m=1,dwst%np
-!			 tmp = tmp + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i1))*conjg(hnx(m,i))*hnx(n,i)*hnx(n,i1)*ov( hnx(m,:) , hnx(n,:))!*dwst%ov_hh(m,n)
-!			 tmp2 = tmp2 + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i1))*hnx(n,i1)*ov( hnx(m,:) , hnx(n,:))!dwst%ov_hh(m,n)
-!			 tmp3 = tmp3 + conjg(dwst%q(m))*dwst%q(n)*conjg(hnx(m,i))*hnx(n,i)*ov( hnx(m,:) , hnx(n,:))!dwst%ov_hh(m,n)
-!		  end do
-!		end do
-!
-!		write(100,'(2f25.15)') abs(dble(i-i1)*sys%dx), real(tmp)/(real(tmp2)*real(tmp3))
-!
-!	 end do
-!
-!	 close(100)
-!
-!  END SUBROUTINE
-!  SUBROUTINE print_3D_g2(sys,x1,x2,st_in)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in),optional	::  st_in
-!	 type(state)								::  upst,st
-!	 real(rl)									::  g2, xlength
-!	 real(rl),intent(in)						::  x1,x2
-!	 integer								   	::  i1,i2,i,m,n,imin,imax
-!	 complex(cx)								::  tmp,tmp2,tmp3
-!	 complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_g2, x1char
-!
-!	 if (present(st_in)) then
-!		st = st_in	
-!	 else
-!		CALL allocate_state(sys,st,sys%npini+sys%npadd)
-!		CALL initialise_from_file_eo(sys,st)
-!	 end if
-!
-!	 write(x1char,'(I10)') int(x1)
-!	 name_g2=trim(adjustl(sys%file_path))//"/g2_"//trim(adjustl(x1char))//"_"//&
-!				  	 trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100, file= name_g2, action="write",status="replace")
-!
-!	 i1 =  int( x1 / sys%dx )
-!	 i2 =  int( x2 / sys%dx )
-!	 imin = min(i1,i2)
-!	 imax = max(i1,i2)
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 fnx = f_nx_eo(sys,st)
-!
-!
-!	 do i=imin, imax
-!
-!		tmp = 0._cx
-!		tmp2= 0._cx
-!		tmp3= 0._cx
-!		do n=1,upst%np
-!		  do m=1,upst%np
-!			 tmp = tmp + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*conjg(fnx(m,i))*fnx(n,i)*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp2 = tmp2 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp3 = tmp3 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i))*fnx(n,i)*upst%ov_ff(m,n)
-!		  end do
-!		end do
-!
-!		write(100,'(2f25.15)') abs(dble(i-i1)*sys%dx), real(tmp)/(real(tmp2)*real(tmp3))
-!
-!	 end do
-!
-!	 close(100)
-!
-!  END SUBROUTINE
- ! FUNCTION convolution( sys,fnx, hnx )
-
- !   complex										::  convolution
- !   type(param), intent(in)      		::  sys
- !   complex(cx), intent(in)				::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
- !   complex(cx), intent(in)				::  hnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
- !   complex(cx)								::  fnx_big(-sys%nmode+1-size( fnx, 2 ):sys%nmode+size( fnx, 2 ))
- !   complex(cx)								::  hnx_big(-sys%nmode+1-size( fnx, 2 ):sys%nmode+size( fnx, 2 ))
-
- !   arraylength = size( fnx, 2 )
- ! END SUBROUTINE
-
-  !SUBROUTINE print_fxs_lowk(sys,st,label,makefilename)
-
-  !  type(param), intent(in)		 ::  sys
-  !  type(state), intent(in)		 ::  st
-  !  character(len=5), intent(in)	 ::  label
-  !  integer, intent(in), optional ::  makefilename
-  !  integer								 ::  n,i,min_index,max_index
-  !  complex(cx), allocatable  	 ::  fnx(:,:), hnx(:,:)
-  !  character(len=200)				 ::  name_fxs,tchar
-
-  !  if ( .not. present(makefilename) ) then
-  ! 	name_fxs=trim(adjustl(sys%file_path))//"/fxs_"//trim(adjustl(label))//"_"//&
-  ! 								 trim(adjustl(parameterchar(sys)))//".d"
-  !  else
-  !  	name_fxs = trim(adjustl(gif_dirname(sys)))//"/"//trim(adjustl(label))//".d"
-  !  end if
-  !  open (unit=100,file= name_fxs,action="write",status="replace")
-  !  
-  !  !-- allocation of the arrays depending on the geometry of the system
-  !  If ( (sys%prep .ge. 50) .and. (sys%prep < 100) ) then
-  ! 	!-- if we have a full chain
-  ! 	allocate(fnx(st%np,-sys%nmode+1:sys%nmode))
-  ! 	allocate(hnx(st%np,-sys%nmode+1:sys%nmode))
-  ! 	fnx = f_nx_eo_lowk(sys,st)
-  ! 	hnx = h_nx_eo(sys,st)
-  ! 	min_index = - sys%nmode+1
-  ! 	max_index = sys%nmode+1
-  !  else if (  sys%prep < 50  )  then
-  ! 	!-- if we have half a chain
-  ! 	allocate(fnx(st%np,sys%nmode))
-  ! 	allocate(hnx(st%np,sys%nmode))
-  ! 	fnx = f_nx(sys,st)
-  ! 	hnx = h_nx(sys,st)
-  ! 	min_index = 1
-  ! 	max_index = sys%nmode
-  !  end if
-
-  !  do i= min_index, max_index
-
-  ! 	write(100,'(f25.15)',advance='no') sys%dx*dble(i-0.5_rl)
-  ! 	do n=1, st%np
-  ! 	  write(100,'(2f25.15)',advance='no') real( fnx(n,i) ), real( hnx(n,i) )
-  ! 	end do
-  ! 	do n=1, st%np
-  ! 	  write(100,'(2f25.15)',advance='no') aimag( fnx(n,i) ), aimag( hnx(n,i) )
-  ! 	end do
-  ! 	write(100,*)
-
-  !  end do
-  !  write(100,*)
-  !  close(100)
-
-  !END SUBROUTINE
-!  SUBROUTINE print_nx_eo_lowk(sys,st,label) 
-!
-!    type(param), intent(in)		 ::  sys
-!	 type(state), intent(in)		 ::  st
-!	 character(len=5), intent(in)	 ::  label
-!	 type(state)						 ::  upst
-!	 character(len=200)				 ::  filename
-!	 integer								 ::  n,m,i
-!	 complex(cx)						 ::  fnx( st%np,-sys%nmode+1:sys%nmode )
-!	 complex(cx)						 ::  tmp
-!
-!	 filename=trim(adjustl(sys%file_path))//"/nx_"//trim(adjustl(label))//"_"&
-!		//trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=105,file= filename,action="write",status="replace")
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!
-!	 fnx = f_nx_eo_lowk(sys,st)
-!
-!	 tmp = 0._cx
-!	 do i=-sys%nmode+1,sys%nmode
-!		do n=1,st%np
-!		  do m=1,st%np
-!
-!			 tmp = tmp + conjg(upst%p(n))*upst%p(m)*(conjg(fnx(n,i))*fnx(m,i))*ov( fnx(n,:) , fnx(m,:) )
-!
-!		  end do
-!		end do
-!		write(105,'(f25.15,f25.15)') sys%dx*(dble(i)-0.5_rl), real(tmp)/sys%dx
-!		tmp=0._cx
-!	 end do
-!	 close(105)
-!
-!  END SUBROUTINE
-!
-!  SUBROUTINE print_1234ph_nk_eo(sys,st,label,max_number)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in)				::  st
-!	 character(len=5), intent(in)		   ::  label
-!	 integer, intent(in),optional			::  max_number
-!	 real(rl)									::  k_5_near, k_5
-!	 integer										::  n_k5
-!	 type(state)								::  upst
-!	 character(len=300)					   ::  name_numbst, k5_char
-!	 integer							 			::  k1,k2,k,k3,k4,k5,k1_eff, k_del
-!	 real(rl)									::  w( -sys%nmode+1 : sys%nmode )
-!	 complex(cx)								::  one_ph_amp( -sys%nmode+1 : sys%nmode )
-!	 real(rl), dimension(-sys%nmode+1 : sys%nmode)	::  tmp1, tmp2, tmp3, tmp4, tmp5, tmp4_del_del
-!	 real(rl)									::  sum_12345, val
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!
-!	 name_numbst=trim(adjustl(sys%file_path))//"/12345ph_"//trim(adjustl(label))//"_"&
-!		//trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100,file= name_numbst,action="write",status="replace")
-!
-!
-!	 tmp2(:) = 0._rl
-!	 tmp3(:) = 0._rl
-!	 tmp4(:) = 0._rl
-!	 tmp5(:) = 0._rl
-!
-!	 print*,"-- Start of spectrum spectrum photonic decomposition"
-!
-!	 one_ph_amp = one_photon_k_amp_up(sys,upst)
-!	 tmp1 = abs( one_ph_amp )**2 / sys%dk1
-!	 tmp2 = nk_2_photon_up(sys,upst)
-!	 tmp3 = nk_3_photon_up(sys,upst)
-!
-!	 if (present( max_number ) .and. ( max_number > 3) .and. (sys%k0<0.18)) then
-!
-!		print*,"      4-photon states START"
-!		call system('date' )
-!		tmp4 = nk_4_photon_up(sys,upst)
-!		print*,"      4-photon states DONE"
-!		call system('date' )
-!
-!		!k_del = int ( 0.08_rl/sys%dk1 )
-!		!tmp4_del_del = nk_4_photon_up_k1_k2(sys,upst,k_del , k_del)
-!
-!		print*,"-- Spectrum printed up to 4 photons"
-!
-!	 end if
-!
-!	 if (present( max_number ) .and. ( max_number > 4) .and. (sys%k0<0.18) ) then
-!
-!		k_5_near = 0.06
-!		n_k5 = int(k_5_near/sys%dk1) 
-!		k_5 = sys%w(n_k5)
-!		print*,"      5-photon states START"
-!		tmp5(n_k5) = nk_5_photon_at_k_up(sys,st,n_k5)
-!		print*,"      5-photon states DONE"
-!
-!	 end if
-!
-!	 do k=-sys%nmode+1, 0
-!	 	w(k) = -sys%w(abs(k-1))
-!	 end do
-!	 do k=1, sys%nmode
-!		w(k) = sys%w(k)
-!	 end do
-!
-!	 do k1= -int(sys%nmode/sys%wmax)+1, int(sys%nmode/sys%wmax)
-!
-!	 	sum_12345 = tmp1(k1) + tmp2(k1) + tmp3(k1) + tmp4(k1) + tmp5(k1) 
-!		write(100,*) w(k1), tmp1(k1), tmp2(k1), tmp3(k1), tmp4(k1), tmp5(k1), sum_12345
-!
-!	 end do
-!	 close(100)
-!
-!	 print*,"-- Spectrum photonic decomposition printed to file"
-!	 print*,
-!
-!  END SUBROUTINE
-!!!
-!  SUBROUTINE print_numbst_x_eo(sys,st,label)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in)				::  st
-!	 character(len=5), intent(in)		   ::  label
-!	 type(state)								::  upst
-!	 complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_numbst
-!	 integer										::  n,l,m,p
-!	 complex(cx)								::  tmp
-!	 real(rl)									::  x,tmp_sum
-!	 complex(cx), dimension(5,st%np)		::  amp
-!	 real(rl), dimension(5)					::  prob
-!
-!	 name_numbst=trim(adjustl(sys%file_path))//"/nbx_"//trim(adjustl(label))//"_"&
-!		//trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100,file= name_numbst,action="write",status="replace")
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 fnx = f_nx_eo(sys,st)
-!
-!	 do l=-sys%nmode+1, sys%nmode
-!
-!		amp=0._rl
-!		prob=0._rl
-!		tmp_sum = 0._rl
-!		write(100,'(f25.15)',advance='no') dble(l-0.5_rl)*sys%dx 
-!		
-!		do n=0,size(prob,1)-1
-!
-!		  do m=1,upst%np
-!
-!			 amp(n+1,m) = upst%p(m) * exp( - 0.5_rl*conjg(fnx(m,l))*fnx(m,l) ) &
-!							 * ( fnx( m,l )**n ) /sqrt( dble(factorial(n)) )
-!
-!		  end do
-!
-!		  tmp=0._rl
-!		  do m=1,upst%np
-!			 do p=1,upst%np
-!
-!				tmp = tmp + conjg(amp(n+1,m))*amp(n+1,p)*upst%ov_ff(m,p)/ov_scalar( fnx(m,l),fnx(p,l) )
-!
-!			 end do
-!		  end do
-!		  prob(n+1) = real(tmp)
-!
-!		  tmp_sum = tmp_sum + prob(n+1)
-!		  write(100,'(f25.15)',advance='no')  prob(n+1)
-!
-!		end do
-!		write(100,'(f25.15)',advance='no')  tmp_sum
-!		write(100,*)
-!
-!	 end do
-!	 close(100)
-!
-!  END SUBROUTINE
-!  SUBROUTINE print_numbst_k_eo(sys,st,label)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in)				::  st
-!	 character(len=5), intent(in)		   ::  label
-!	 type(state)								::  upst
-!	 complex(cx),dimension( st%np,-sys%nmode+1:sys%nmode ) ::  fk
-!	 character(len=300)					   ::  name_numbst
-!	 integer										::  j,n,l,m,p
-!	 complex(cx)								::  tmp
-!	 real(rl)									::  tmp_sum
-!	 complex(cx), dimension(5,st%np)		::  amp
-!	 real(rl), dimension(5)					::  prob
-!
-!	 name_numbst=trim(adjustl(sys%file_path))//"/nbk_"//trim(adjustl(label))//"_"&
-!		//trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100,file= name_numbst,action="write",status="replace")
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!
-!	 fk(:,1:sys%nmode) = sqrt(0.5_rl)*( upst%f + upst%fo )
-!	 do j = -sys%nmode +1,0
-!		fk(:,j) = sqrt(0.5_rl)*( upst%f(:,(abs(j)+1)) - upst%fo(:,(abs(j)+1)) )
-!	 end do
-!
-!	 do l=-sys%nmode+1, sys%nmode
-!
-!		amp=0._rl
-!		prob=0._rl
-!		tmp_sum = 0._rl
-!		write(100,'(f25.15)',advance='no') sys%dk1*(l-0.5_rl)
-!		
-!		do n=0,size(prob,1)-1
-!
-!		  do m=1,upst%np
-!
-!			 amp(n+1,m) = upst%p(m) * exp( - 0.5_rl*conjg(fk(m,l))*fk(m,l) ) &
-!							 * ( fk( m,l )**n ) /sqrt( dble(factorial(n)) )
-!
-!		  end do
-!
-!		  tmp=0._rl
-!		  do m=1,upst%np
-!			 do p=1,upst%np
-!
-!				tmp = tmp + conjg(amp(n+1,m))*amp(n+1,p)*upst%ov_ff(m,p)/ov_scalar( fk(m,l),fk(p,l) )
-!
-!			 end do
-!		  end do
-!		  prob(n+1) = real(tmp)
-!
-!		  tmp_sum = tmp_sum + prob(n+1)
-!		  write(100,'(f25.15)',advance='no')  prob(n+1)
-!
-!		end do
-!		write(100,'(f25.15)',advance='no')  tmp_sum
-!		write(100,*)
-!
-!	 end do
-!	 close(100)
-!
-!  END SUBROUTINE
-!!
-!  SUBROUTINE print_g2_2(sys,st_in)
-!
-!	 type(param), intent(in)      		::  sys
-!	 type(state), intent(in),optional	::  st_in
-!	 type(state)								::  upst,st
-!	 real(rl)									::  g2, xlength
-!	 integer								   	::  i1,i2,m,n, imax, i_i, i_f
-!	 complex(cx)								::  tmp,tmp2
-!	 complex(cx)								::  fnx(sys%npini+sys%npadd,-sys%nmode+1:sys%nmode)
-!	 character(len=300)					   ::  name_g2, x1char
-!
-!	 if (present(st_in)) then
-!		st = st_in	
-!	 else
-!		CALL allocate_state(sys,st,sys%npini+sys%npadd)
-!		CALL initialise_from_file_eo(sys,st)
-!	 end if
-!
-!	 write(x1char,'(I10)') int(sys%x1)
-!	 name_g2=trim(adjustl(sys%file_path))//"/g2_"//trim(adjustl(x1char))//"_"//&
-!				  	 trim(adjustl(parameterchar(sys)))//".d"
-!	 open (unit=100, file= name_g2, action="write",status="replace")
-!
-!	 xlength = 500._rl
-!	 i1 = int(sys%x1/sys%dx)
-!	 if (sys%x1<0) then
-!		imax = int( (sys%x1+xlength)/sys%dx ) 
-!	 else
-!		imax = int( (sys%x1+xlength)/sys%dx ) 
-!	 end if
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!	 fnx = f_nx_eo(sys,st)
-!
-!	 do i2=i1, imax
-!
-!		tmp = 0._cx
-!		tmp2= 0._cx
-!		do n=1,upst%np
-!		  do m=1,upst%np
-!			 tmp = tmp + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*conjg(fnx(m,i2))*fnx(n,i2)*fnx(n,i1)*upst%ov_ff(m,n)
-!			 tmp2 = tmp2 + conjg(upst%p(m))*upst%p(n)*conjg(fnx(m,i1))*fnx(n,i1)*upst%ov_ff(m,n)
-!		  end do
-!		end do
-!
-!		write(100,'(2f15.8)') dble(i2-i1)*sys%dx, real(tmp)/real(tmp2)**2
-!
-!	 end do
-!
-!
-!  END SUBROUTINE
-!
-  !SUBROUTINE print_av_nk_eo(sys,st,label) 
-
-  !  type(param), intent(in)			  	::  sys
-  !  type(state), intent(in)				::  st
-  !  type(state)								::	 st_filtered, st_filtered_av
-  !  character(len=5), intent(in)	 		::  label
-  !  character(len=5) 				 		::  label2
-  !  character(len=200)						::  xminchar,wigxmaxchar,filename,name1,name2
-  !  real(rl)									::  xmin_min,xmin_max,dxmin,xmin
-  !  integer										::  i, inumb
-
-  !  write(xminchar, '(I5)') int(sys%xmin)
-  !  write(wigxmaxchar, '(I5)') int(sys%wigxmax)
-  !  filename=trim(adjustl(sys%file_path))//"/nk_av_"//trim(adjustl(label))//"_"&
-  ! 	//trim(adjustl(parameterchar(sys)))//"_"&
-  ! 	//trim(adjustl(xminchar))//"_"//trim(adjustl(wigxmaxchar))//".d"
-  !  open (unit=105,file= filename,action="write",status="replace")
-  !  
-  !  xmin_min = sys%xmin - sys%wigxmax
-  !  xmin_max = sys%xmin + sys%wigxmax
-  !  dxmin = 10._rl
-  !  inumb = (xmin_max - xmin_min)/dxmin + 1
-
-  !  st_filtered_av = st
-  !  st_filtered_av%f = 0._rl
-  !  st_filtered_av%h = 0._rl
-
-  !  do i=1, inumb
-  !  	xmin = xmin_min + dxmin*(i-1)
-  ! 	st_filtered = filtered_wp_eo(sys,st,xmin)
-  ! 	st_filtered_av%f = st_filtered_av%f + st_filtered%f/dble(inumb) 
-  !  end do
-
-  !  !--careful with array ranges!
-  !  do i=-sys%nmode+1,sys%nmode
-  ! 	write(105,'(f25.10,f25.15)') sys%dk1 * (i-0.5_rl), n_up_k_eo(sys,st_filtered_av,i)/sys%dk1
-  !  end do
-  !  close(105)
-
-  ! !	do j=1,5
-  ! !	  eta = sys%eta + 0.5*(j-1)
-  ! !	  write(105,'(f14.8)',advance='no') n_up_k_eo(sys,st,i,eta)/sys%dk1
-  ! !	end do
-  ! !	write(105, *)
-
-  !END SUBROUTINE
-
-		!if (st%np == oost%np) then
-		!  CALL checkTimestep(sys,st,ost,oost,slowfactor,0.00005_rl)
-		!end if
-
-
-!  SUBROUTINE printwigner_2(filenb,sys,st,res,xxminIN,xxmaxIN)
-!
-!	 type(param), intent(in)						 	::  sys
-!	 type(state), intent(in) 		    				::  st
-!	 integer, intent(in)								   ::  res
-!	 integer,intent(in)									::  filenb
-!	 real(rl), intent(in), optional					::  xxminIN, xxmaxIN
-!	 type(state)					  						::  upst
-!	 complex(cx), allocatable  						::  fnx(:,:)
-!	 complex(cx), allocatable  						::  z(:)
-!	 real(rl)												::  normz
-!	 complex(cx)					  						::  wigner_f,tmp,wig_up,wig_down,zz,norm
-!	 integer							  						::  i,n,m,xnum,j
-!	 real(rl)												::  xmin,xmax,pmin,pmax,x,p
-!	 complex(cx), allocatable							::  ovmat(:,:)
-!	 complex(cx), allocatable							::  zTfnx(:), fn_bar(:)
-!	 complex(cx), allocatable							::  nullarray(:)
-!	 real(rl)												::  xxmin, xxmax
-!
-!	 allocate( ovmat(st%np,st%np), zTfnx(st%np), fn_bar(st%np) )
-!	 allocate( fnx(st%np,sys%nmode), z(sys%nmode), nullarray(sys%nmode) )
-!	 nullarray = 0._cx
-!		
-!	 if ( present(xxminIN) ) then
-!	 	xxmin = xxminIN
-!	 	xxmax = xxmaxIN
-!	 else
-!	 	xxmin = sys%xmin
-!	 	xxmax = sys%wigxmax
-!	 end if
-!
-!	 upst = st
-!	 upst%q(:) = 0._cx
-!	 CALL normalise(upst)
-!
-!	 fnx = f_nx(sys,st)
-!
-!	 z = 0._cx
-!	 do i=int(xxmin/sys%dx)+1,int(xxmax/sys%dx)
-!		tmp = 0._cx
-!		do n=1,st%np
-!		  	 tmp = tmp + upst%p(n)*fnx(n,i)!*ov(nullarray,upst%f(n,:))
-!		end do
-!		z(i) = tmp
-!	 end do
-!
-!	 normz = 0._rl
-!	 normz = sqrt( sum( abs(z(:))**2 ) )
-!	 if (normz > 1.0e-8) then
-!		z =(z/normz)
-!	 end if
-!
-!	 do i=0,sys%nmode
-!		write(153,*) i*sys%dx, real(z(i)), aimag(z(i)) 
-!	 end do
-!
-!	 ovmat = 0._cx
-!	 zTfnx = 0._cx
-!
-!	 do n=1,size(upst%p,1)
-!		zTfnx(n) = sum(conjg(z(:))*fnx(n,:))
-!	 end do
-!	 do n=1,st%np
-!		do m=1,st%np
-!		  ovmat(n,m) = exp(  -0.5_rl*( conjg(zTfnx(n))*zTfnx(n) + conjg(zTfnx(m))*zTfnx(m) )  + conjg(zTfnx(n))*zTfnx(m) )
-!		end do
-!	 end do
-!	 !norm=0._rl
-!	 !do n=1,st%np
-!	 !  do m=1,st%np
-!	 !    norm = norm + conjg(upst%p(n))*upst%p(m)*exp( -0.5_rl*( conjg(zTfnx(n))*zTfnx(n) &
-!	 !  			 + conjg(zTfnx(m))*zTfnx(m) )  + conjg(zTfnx(n))*zTfnx(m) )
-!	 !  end do
-!	 !end do
-!	 !norm = real(norm)
-!
-!	 !upst%p = upst%p/sqrt(norm)
-!
-!	 xmin = -3
-!	 xmax = 3
-!	 pmin = -3
-!	 pmax = 3
-!	 xnum = (xmax - xmin) * res
-!
-!	 do i=0,xnum
-!		do j=0,xnum
-!		  
-!		  wigner_f = 0._rl
-!		  wig_up = 0._cx
-!		  wig_down = 0._cx
-!		  x = xmin + (xmax-xmin)*i/xnum
-!		  p = pmin + (pmax-pmin)*j/xnum
-!
-!		  zz = exp( Ic*sys%wigrotangle ) * ( x + Ic*p )
-!
-!		  do n=1,size(upst%p,1)
-!			 do m=1,size(upst%p,1)
-!				zz = exp( Ic*sys%wigrotangle ) * ( x + Ic*p )
-!				wig_up = wig_up + conjg(upst%p(n))*upst%p(m) &
-!				* exp( -2._rl * ( real(zz)+Ic*aimag(zz) - zTfnx(m) ) * ( real(zz)-Ic*aimag(zz) - conjg(zTfnx(n)) ) ) &
-!				* ovmat(n,m)
-!				zz = - zz
-!				wig_down = wig_down + conjg(upst%p(n))*upst%p(m) &
-!				* exp( -2._rl * ( real(zz)+Ic*aimag(zz) - zTfnx(m) ) * ( real(zz)-Ic*aimag(zz) - conjg(zTfnx(n)) ) ) &
-!				* ovmat(n,m)
-!			 end do
-!		  end do
-!
-!		  !wigner_f = (2._rl/pi) * 0.5_rl * (wig_up + wig_down)
-!		  wigner_f = (2._rl/pi) * (wig_up) 
-!
-!		  write(filenb,*) x,p,real(wigner_f)
-!
-!		end do
-!		write(filenb,*)
-!	 end do
-!
-!  END SUBROUTINE
-
-  !-- use chit(t) file to apply a Fourrier Transform
-!  SUBROUTINE fourrierTransform(sys,filename)
-!
-!	 CHARACTER, intent(in)			::  filename
-!    type(param), intent(in out)		  	::  sys
-!	 complex(cx)								::  kai, integral
-!	 complex(cx),dimension(sys%nmode)				::  kai_w
-!	 complex(cx),dimension(int(sys%tmax/sys%dt))	::  kai_t
-!	 real(rl)												::  a,b,c
-!	 integer													::  i,j
-!
-!	 open(1111,file=filename,status="old",action="read")
-!
-!	 do j=1, int(sys%tmax/sys%dt)
-!
-!		read(1111, *) a,b,c
-!		kai_t(j) = b + Ic* c
-!
-!		kai_w(:) =  kai_w(:) + (0.5_rl*sys%dt/pi)*real(kai_t(j))*exp( -Ic*sys%w(:)*sys%dt*(j-1) )
-!
-!	 end do
-!  !	 integral = sum( (sys%wmax/real(sys%nmode))*aimag(kai_w(:)) )
-!	 kai_w(:) = kai_w(:)/(4.0d0*integral/pi)
-!
-!	 do i=1, sys%nmode
-!		write(16,*) sys%w(i), real(kai_w(i)), aimag(kai_w(i))
-!	 end do
-!	 do j=1, int(sys%tmax/sys%dt)
-!	 	write(161,*) sys%dt*(j-1), real(kai_t(j)),aimag(kai_t(j))
-!	 end do
-!
-!  END SUBROUTINE
-
-!  !-- Perform the time-evolution after having isolated the groundstate
-!  SUBROUTINE printTrajectory_with_groundstate(sys) 
-!
-!    type(param), intent(in out)		  	::  sys
-!	 type(state)						  		::  st
-!	 integer  									::  i,m,k
-!	 type(state)								::  ost, oost
-!
-!
-!	 CALL initialise_state(sys,st,0._rl)
-!	 CALL openfiles(sys,st)
-!
-!	 ! Evolve until WP is far enough from site 0
-!	 CALL evolveState(sys,st,sys%tcut)
-!	 !-- plot the average and polaron-specific spacial WF
-!	 do m=0,sys%nmode-1
-!		write(123,*) sys%dx*m, real( f_x(sys,st,sys%dx*m) ), real( h_x(sys,st,sys%dx*m) ),&
-!				  aimag( f_x(sys,st,sys%dx*m) ), aimag( h_x(sys,st,sys%dx*m) )
-!
-!		write(126,'(f6.2)',advance='no') sys%dx*m
-!		do i=1, st%np
-!		  write(126,'(2f11.5)',advance='no') real( fn_x(sys,st,i,sys%dx*m) ), real( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		do i=1, st%np
-!		  write(126,'(2f11.5)',advance='no') aimag( fn_x(sys,st,i,sys%dx*m) ), aimag( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		write(126,*)
-!
-!	 end do
-!	 !-- k-space average and polaron-specific distribution of modes
-!	 do  k=1,sys%nmode
-!		write(142,'(f6.2)',advance='no') sys%w(k)
-!		do i=1,st%np
-!		  write(142,'(2f11.5)',advance='no') real(st%f(i,k)), real(st%h(i,k))
-!		end do
-!		write(142,*)
-!	 end do
-!
-!	 CALL isolateGroundState(sys,st)
-!	 do i=1,st%np
-!		st%h(i,:) = - sys%fstep(:)*(i-1)
-!		st%q(:) = IP_p
-!	 end do
-!	 CALL update_sums(sys,st)
-!	 CALL normalise(st)
-!
-!	 print*,"norm",norm(st)
-!!	 ost=st
-!!	 oost=st
-!!	 do i=1,10
-!!	 CALL evolve_RK4(sys,st,ost,oost,10)
-!!  end do
-!!	 print*,"norm",norm(st)
-!
-!	 !-- plot the average and polaron-specific spacial WF
-!	 do m=0,sys%nmode-1
-!		write(122,*) sys%dx*m, real( f_x(sys,st,sys%dx*m) ), real( h_x(sys,st,sys%dx*m) ),&
-!				  aimag( f_x(sys,st,sys%dx*m) ), aimag( h_x(sys,st,sys%dx*m) )
-!
-!		write(125,'(f6.2)',advance='no') sys%dx*m
-!		do i=1, st%np
-!		  write(125,'(2f11.5)',advance='no') real( fn_x(sys,st,i,sys%dx*m) ), real( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		do i=1, st%np
-!		  write(125,'(2f11.5)',advance='no') aimag( fn_x(sys,st,i,sys%dx*m) ), aimag( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		write(125,*)
-!	 end do
-!	 !-- k-space average and polaron-specific distribution of modes
-!	 do  k=1,sys%nmode
-!		write(143,'(f6.2)',advance='no') sys%w(k)
-!		do i=1,st%np
-!		  write(143,'(2f11.5)',advance='no') real(st%f(i,k)), real(st%h(i,k))
-!		end do
-!		write(143,*)
-!	 end do
-!
-!	 CALL evolveState(sys,st,sys%tmax)
-!	 print*,"norm",norm(st)
-!	 !-- plot the average and polaron-specific spacial WF
-!	 do m=0,sys%nmode-1
-!		write(121,*) sys%dx*m, real( f_x(sys,st,sys%dx*m) ), real( h_x(sys,st,sys%dx*m) ),&
-!				  aimag( f_x(sys,st,sys%dx*m) ), aimag( h_x(sys,st,sys%dx*m) )
-!
-!		write(124,'(f6.2)',advance='no') sys%dx*m
-!		do i=1, st%np
-!		  write(124,'(2f11.5)',advance='no') real( fn_x(sys,st,i,sys%dx*m) ), real( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		do i=1, st%np
-!		  write(124,'(2f11.5)',advance='no') aimag( fn_x(sys,st,i,sys%dx*m) ), aimag( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		write(124,*)
-!
-!	 end do
-!	 !-- polaron-specific distribution of modes in k-space
-!	 do  k=1,sys%nmode
-!		write(141,'(f6.2)',advance='no') sys%w(k)
-!		do i=1,st%np
-!		  write(141,'(2f11.5)',advance='no') real(st%f(i,k)), real(st%h(i,k))
-!		end do
-!		write(141,*)
-!	 end do
-!
-!  END SUBROUTINE
-
-
-
-
-
-
-
-
-
-
-!  !-- some routines
-!	 FUNCTION determinant(m) 
-!		complex(cx), dimension(3,3), intent(in)  ::  m
-!		complex(cx) ::  determinant
-!
-!		determinant = m(1,1)*m(2,2)*m(3,3) + m(2,1)*m(3,2)*m(1,3) + &
-!		m(3,1)*m(1,2)*m(2,3) - m(1,3)*m(2,2)*m(3,1) - m(2,3)*m(3,2)*m(1,1) - m(3,3)*m(1,2)*m(2,1)
-!
-!		
-!	 END FUNCTION
-
-!	 do m=0,sys%nmode-1
-!		write(121,*) sys%dx*m, real( f_x(sys,st,sys%dx*m) ), real( h_x(sys,st,sys%dx*m) ),&
-!				  aimag( f_x(sys,st,sys%dx*m) ), aimag( h_x(sys,st,sys%dx*m) )
-!		write(129,*) sys%dx*m, real( adag2_up(sys,st,sys%dx*m) ), real( adag2_up(sys,st,sys%dx*m) ),&
-!				  aimag( adag2_up(sys,st,sys%dx*m) ), aimag( adag2_up(sys,st,sys%dx*m) )
-!
-!		write(124,'(f6.2)',advance='no') sys%dx*m
-!		do i=1, st%np
-!		  write(124,'(2f11.5)',advance='no') real( fn_x(sys,st,i,sys%dx*m) ), real( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		do i=1, st%np
-!		  write(124,'(2f11.5)',advance='no') aimag( fn_x(sys,st,i,sys%dx*m) ), aimag( hn_x(sys,st,i,sys%dx*m) )
-!		end do
-!		write(124,*)
-!	 end do
-!	 !-- k-space average and polaron-specific distribution of modes
-!	 do  k=1,sys%nmode
-!		write(141,'(f6.2)',advance='no') sys%w(k)
-!		do i=1,st%np
-!		  write(141,'(2f11.5)',advance='no') real(st%f(i,k)), real(st%h(i,k))
-!		end do
-!		write(141,*)
-!	 end do
-
-	 !-- Attempting to separate propagating part and stationary part 
-
-	 !CALL allocate_state(sys,wp_st,st%np)
-	 !CALL allocate_state(sys,sta_st,st%np)
-	 !CALL make_sta_st(sta_st,st) 
-	 !CALL make_wp_st(wp_st,st,sta_st)
-
-	 !CALL print_fks(sys,st,14100)
-	 !CALL print_fks(sys,wp_st,14101)
-	 !CALL print_fks(sys,sta_st,14102)
-	 !close(14100)
-	 !close(14101)
-	 !close(14102)

@@ -1,51 +1,52 @@
 ! ==============================================================================
-!  FILE: typedefs.f90
+!  FILE / MODULE: typedefs.f90 (typedefs)
 !
-!  PURPOSE
-!    Original research code used to produce the numerical data underlying the figures of:
-!      N. Gheeraert et al., Phys. Rev. A 98, 043816 (2018) "Particle production in
-!      ultrastrong-coupling waveguide QED".
+!  PURPOSE & CONTEXT
+!    Central definition of numerical precision (kinds) for the waveguide QED 
+!    simulation. This infrastructure ensures that the code can be compiled in 
+!    either single or double precision without modifying the physics routines. 
 !
-!  OVERVIEW
-!    This code implements a time-dependent variational simulation of the spin-boson
-!    model (a two-level system coupled to a continuum of bosonic modes) using a
-!    superposition of multimode coherent states (sometimes called the multi-polaron
-!    or MCS ansatz). The main workflow is:
-!      main.f90 -> output:printTrajectory_DL -> output:evolveState_DL -> RK4 time-step
-!      with systm:CalcDerivatives computing the variational equations of motion.
+!  CORE RESPONSIBILITIES
+!    1. Kind Selection : Defines standard integer and real kind parameters 
+!                        (single, double, and quadruple precision) using 
+!                        portable Fortran intrinsics.
+!    2. Type Aliasing  : Maps the generic aliases `r_type` (real) and `c_type` 
+!                        (complex) to specific precisions via preprocessor 
+!                        directives.
 !
-!  BUILD / DEPENDENCIES
-!    * Free-form Fortran 90/95 code.
+!  COMPILATION NOTE
+!    - If the preprocessor symbol `DP` is defined during compilation (e.g., 
+!      -DDP), the simulation runs in 64-bit double precision.
+!    - Otherwise, it defaults to 32-bit single precision.
+!
 ! ==============================================================================
 !
-  module typedefs
-  !> -------------------------------------------------------------------------
-  !> MODULE: typedefs
-  !> -------------------------------------------------------------------------
-  !> Purpose / context:
-  !>   Module `typedefs`: central container for simulation types and routines.
-  !>   This module defines the core data structures (param/state/traj) and the
-  !>   variational equations of motion used during time evolution.
-  !> Arguments:
-  !>   (none)
-  !>
+MODULE typedefs
+
   implicit none
+
+! -- Integer Kinds --
   integer, parameter :: i1b=selected_int_kind(2)
   integer, parameter :: i2b=selected_int_kind(4)
   integer, parameter :: i4b=selected_int_kind(8)
-  integer, parameter :: sp=kind(1.0)
-  integer, parameter :: spc=kind((1.0,1.0))
-  integer, parameter :: dp=selected_real_kind(15)
-  integer, parameter :: qp=selected_real_kind(2*precision(1.0_dp))
-  integer, parameter :: dpc=kind((1.0_dp,1.0_dp))
-  integer, parameter :: qpc=kind((1.0_qp,1.0_qp))
+
+! -- Floating Point Kinds --
+  integer, parameter :: sp=kind(1.0)			! Single precision
+  integer, parameter :: spc=kind((1.0,1.0))		! Single complex
+  integer, parameter :: dp=selected_real_kind(15)	! Double precision
+  integer, parameter :: qp=selected_real_kind(2*precision(1.0_dp))	! Quadruple precision
+  integer, parameter :: dpc=kind((1.0_dp,1.0_dp))	! Double complex
+  integer, parameter :: qpc=kind((1.0_qp,1.0_qp))	! Quadruple complex
 #ifdef DP
+! -- Double Precision Configuration --
   integer, parameter :: r_type = dp 
   integer, parameter :: q_type = qp
   integer, parameter :: c_type = dpc 
   integer, parameter :: qc_type = qpc 
 #else
+! -- Single Precision Configuration (Lightweight) --
   integer, parameter :: r_type = sp 
   integer, parameter :: c_type = spc 
 #endif
-end module typedefs
+
+END module typedefs
