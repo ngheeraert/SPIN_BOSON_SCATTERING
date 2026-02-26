@@ -245,7 +245,7 @@ Second-order correlations are typically harder to converge than average photon n
 
 ## Notes on performance
 Rough scaling:
-- memory/time grows with `nmode × Ncs`, with additional overhead from dense linear algebra.
+- memory/time grows with `nmode × Ncs**6`, with additional overhead from dense linear algebra.
 
 If you get failures:
 - reduce `dt`
