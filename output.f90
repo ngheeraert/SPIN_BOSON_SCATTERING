@@ -1,4 +1,4 @@
-! ==============================================================================
+!==============================================================================
 !  FILE: output.f90
 !
 !  PURPOSE & CONTEXT
@@ -39,7 +39,6 @@
 ! ==============================================================================
 !
 MODULE output
-
   USE systm
   USE consts
 
@@ -242,7 +241,7 @@ CONTAINS
 
 	 slowfactor = 1._rl
 	 dtprint = 20*sys%dt/dble(slowfactor)
-	 superinverseflag = .true.
+	 superinverseflag = .false.
 
 	 EVOLUTION: DO
 
@@ -270,7 +269,6 @@ CONTAINS
 
 		IF ( st%t < tini+sys%tref ) THEN
 		  dtprint = 1000._rl
-		  superinverseflag = .false.
 		  if (st%t < 0.0000001_rl+tini)  then
 			 slowfactor = 1.0e7_rl
 		  elseif ( (st%t < 0.000001_rl+tini) .and. (st%t > 0.0000001_rl+tini) ) then
@@ -293,11 +291,9 @@ CONTAINS
 		ELSE IF ( st%np < sys%npini+sys%npadd ) THEN
 		  slowfactor = 1
 		  dtprint = 20*sys%dt
-		  superinverseflag = .true.
 		ELSE
 		  slowfactor = 1
 		  dtprint = 200*sys%dt/dble(slowfactor)
-		  superinverseflag = .true.
 		END IF
 
 
